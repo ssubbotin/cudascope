@@ -96,12 +96,12 @@ func selectResolution(spanSec int64) (table, cols string) {
 	case spanSec <= 3600: // <=1h: raw data
 		return "gpu_metrics_raw",
 			"ts, COALESCE(node_id, 'local'), gpu_id, gpu_util, mem_util, mem_used, temperature, fan_speed, power_draw, power_limit, clock_gfx, clock_mem, pcie_tx, pcie_rx, pstate, encoder_util, decoder_util"
-	case spanSec <= 604800: // <=7d: 1m rollup
+	case spanSec <= 2592000: // <=30d: 1m rollup (use max for util/temp to preserve spikes)
 		return "gpu_metrics_1m",
-			"ts, COALESCE(node_id, 'local'), gpu_id, gpu_util_avg, mem_util_avg, CAST(mem_used_avg AS INTEGER), CAST(temperature_avg AS INTEGER), CAST(fan_speed_avg AS INTEGER), power_draw_avg, 0, CAST(clock_gfx_avg AS INTEGER), CAST(clock_mem_avg AS INTEGER), CAST(pcie_tx_avg AS INTEGER), CAST(pcie_rx_avg AS INTEGER), 0, 0, 0"
-	default: // >7d: 1h rollup
+			"ts, COALESCE(node_id, 'local'), gpu_id, gpu_util_max, mem_util_avg, CAST(mem_used_max AS INTEGER), temperature_max, CAST(fan_speed_avg AS INTEGER), power_draw_avg, 0, CAST(clock_gfx_avg AS INTEGER), CAST(clock_mem_avg AS INTEGER), CAST(pcie_tx_avg AS INTEGER), CAST(pcie_rx_avg AS INTEGER), 0, 0, 0"
+	default: // >30d: 1h rollup (use max for util/temp to preserve spikes)
 		return "gpu_metrics_1h",
-			"ts, COALESCE(node_id, 'local'), gpu_id, gpu_util_avg, mem_util_avg, CAST(mem_used_avg AS INTEGER), CAST(temperature_avg AS INTEGER), 0, power_draw_avg, 0, 0, 0, 0, 0, 0, 0, 0"
+			"ts, COALESCE(node_id, 'local'), gpu_id, gpu_util_max, mem_util_avg, CAST(mem_used_max AS INTEGER), temperature_max, 0, power_draw_avg, 0, 0, 0, 0, 0, 0, 0, 0"
 	}
 }
 
@@ -163,12 +163,12 @@ func selectHostResolution(spanSec int64) (table, cols string) {
 	case spanSec <= 3600:
 		return "host_metrics_raw",
 			"ts, node_id, cpu_percent, mem_used, mem_total, disk_used, disk_total, net_rx, net_tx, load_1m, load_5m, load_15m"
-	case spanSec <= 604800: // <=7d: 1m rollup
+	case spanSec <= 2592000: // <=30d: 1m rollup (use max for cpu to preserve spikes)
 		return "host_metrics_1m",
-			"ts, node_id, cpu_percent_avg, CAST(mem_used_avg AS INTEGER), mem_total, disk_used, disk_total, CAST(net_rx_avg AS INTEGER), CAST(net_tx_avg AS INTEGER), load_1m_avg, 0, 0"
-	default: // >7d: 1h rollup
+			"ts, node_id, cpu_percent_max, CAST(mem_used_max AS INTEGER), mem_total, disk_used, disk_total, CAST(net_rx_avg AS INTEGER), CAST(net_tx_avg AS INTEGER), load_1m_max, 0, 0"
+	default: // >30d: 1h rollup
 		return "host_metrics_1h",
-			"ts, node_id, cpu_percent_avg, CAST(mem_used_avg AS INTEGER), mem_total, 0, 0, 0, 0, load_1m_avg, 0, 0"
+			"ts, node_id, cpu_percent_max, CAST(mem_used_max AS INTEGER), mem_total, 0, 0, 0, 0, load_1m_max, 0, 0"
 	}
 }
 
