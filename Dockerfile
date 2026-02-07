@@ -27,6 +27,6 @@ EXPOSE 9090
 VOLUME /data
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \
-    CMD ["/usr/local/bin/cudascope", "--mode=healthcheck"] || exit 1
+    CMD ["/usr/local/bin/cudascope", "--mode=healthcheck"]
 
 ENTRYPOINT ["cudascope"]
