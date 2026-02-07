@@ -2,27 +2,30 @@
 
 Lightweight, self-hosted NVIDIA GPU monitoring with real-time dashboards and historical metrics.
 
+```bash
+docker run -d --gpus all -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascope
+```
+
+Then open [http://localhost:9090](http://localhost:9090).
+
 - **Direct NVML access** via [go-nvml](https://github.com/NVIDIA/go-nvml) - no nvidia-smi parsing
 - **Embedded storage** - SQLite with automatic rollup retention (raw 1s -> 1m -> 1h)
 - **Single binary** - Go backend with embedded Svelte 5 SPA (go:embed)
 - **Zero dependencies** - no Prometheus, no Grafana, no InfluxDB
 - **Multi-node** - Docker Swarm support with agent/hub architecture
-- **1-command install** - `docker compose up -d`
 
 ## Quick Start
 
 ### Standalone (single host)
 
 ```bash
-docker compose up -d
+docker run -d --gpus all -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascope
 ```
 
-Open [http://localhost:9090](http://localhost:9090).
-
-Or without Compose:
+Or with Compose:
 
 ```bash
-docker run -d --gpus all -p 9090:9090 -v cudascope-data:/data cudascope/cudascope
+docker compose up -d
 ```
 
 ### Docker Swarm (multi-node GPU cluster)
@@ -123,7 +126,7 @@ Enable basic auth:
 ```bash
 docker run -d --gpus all -p 9090:9090 \
   -e CUDASCOPE_AUTH=admin:secret \
-  -v cudascope-data:/data cudascope/cudascope
+  -v cudascope-data:/data ssubbotin/cudascope
 ```
 
 Protects all endpoints except `/api/v1/healthz` and agent ingest routes.

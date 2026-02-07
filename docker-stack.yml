@@ -3,7 +3,7 @@ version: "3.8"
 services:
   # Agent: runs on every GPU node, collects metrics and pushes to hub
   agent:
-    image: cudascope/cudascope:latest
+    image: ssubbotin/cudascope:latest
     command: ["--mode=agent", "--hub-url=http://hub:9090"]
     deploy:
       mode: global
@@ -23,7 +23,7 @@ services:
 
   # Hub: central server with UI and storage
   hub:
-    image: cudascope/cudascope:latest
+    image: ssubbotin/cudascope:latest
     command: ["--mode=hub"]
     ports:
       - "9090:9090"

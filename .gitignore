@@ -6,3 +6,5 @@ ui/.svelte-kit/
 *.db-wal
 *.db-shm
 /data/
+CLAUDE.md
+ARCHITECTURE.md

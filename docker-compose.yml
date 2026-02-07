@@ -1,6 +1,6 @@
 services:
   cudascope:
-    image: cudascope/cudascope:latest
+    image: ssubbotin/cudascope:latest
     build: .
     ports:
       - "9090:9090"
