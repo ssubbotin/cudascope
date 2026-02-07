@@ -63,7 +63,7 @@ func (db *DB) rollupGPUTo1m(beforeTs int64) {
 	db.conn.QueryRow("SELECT COALESCE(MAX(ts), 0) FROM gpu_metrics_1m").Scan(&lastRolled)
 
 	_, err := db.conn.Exec(`
-		INSERT INTO gpu_metrics_1m (ts, node_id, gpu_id, gpu_util_avg, gpu_util_max, mem_util_avg,
+		INSERT OR REPLACE INTO gpu_metrics_1m (ts, node_id, gpu_id, gpu_util_avg, gpu_util_max, mem_util_avg,
 			mem_used_avg, mem_used_max, temperature_avg, temperature_max, fan_speed_avg,
 			power_draw_avg, power_draw_max, clock_gfx_avg, clock_mem_avg, pcie_tx_avg, pcie_rx_avg)
 		SELECT
@@ -88,7 +88,7 @@ func (db *DB) rollupGPUTo1h(beforeTs int64) {
 	db.conn.QueryRow("SELECT COALESCE(MAX(ts), 0) FROM gpu_metrics_1h").Scan(&lastRolled)
 
 	_, err := db.conn.Exec(`
-		INSERT INTO gpu_metrics_1h (ts, node_id, gpu_id, gpu_util_avg, gpu_util_max, mem_util_avg,
+		INSERT OR REPLACE INTO gpu_metrics_1h (ts, node_id, gpu_id, gpu_util_avg, gpu_util_max, mem_util_avg,
 			mem_used_avg, mem_used_max, temperature_avg, temperature_max, power_draw_avg, power_draw_max)
 		SELECT
 			(ts / 3600) * 3600 as hour_ts, COALESCE(node_id, 'local'), gpu_id,
@@ -112,7 +112,7 @@ func (db *DB) rollupHostTo1m(beforeTs int64) {
 	db.conn.QueryRow("SELECT COALESCE(MAX(ts), 0) FROM host_metrics_1m").Scan(&lastRolled)
 
 	_, err := db.conn.Exec(`
-		INSERT INTO host_metrics_1m (ts, node_id, cpu_percent_avg, cpu_percent_max,
+		INSERT OR REPLACE INTO host_metrics_1m (ts, node_id, cpu_percent_avg, cpu_percent_max,
 			mem_used_avg, mem_used_max, mem_total, disk_used, disk_total,
 			net_rx_avg, net_tx_avg, load_1m_avg, load_1m_max)
 		SELECT
@@ -137,7 +137,7 @@ func (db *DB) rollupHostTo1h(beforeTs int64) {
 	db.conn.QueryRow("SELECT COALESCE(MAX(ts), 0) FROM host_metrics_1h").Scan(&lastRolled)
 
 	_, err := db.conn.Exec(`
-		INSERT INTO host_metrics_1h (ts, node_id, cpu_percent_avg, cpu_percent_max,
+		INSERT OR REPLACE INTO host_metrics_1h (ts, node_id, cpu_percent_avg, cpu_percent_max,
 			mem_used_avg, mem_used_max, mem_total, load_1m_avg, load_1m_max)
 		SELECT
 			(ts / 3600) * 3600 as hour_ts, node_id,

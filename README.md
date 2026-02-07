@@ -215,6 +215,8 @@ docker compose build
 
 Rollup and pruning run automatically every 60 seconds.
 
+Data is stored in SQLite at the path specified by `CUDASCOPE_DATA_DIR` (default `/data`). The `-v cudascope-data:/data` flag in the Docker commands creates a named volume that persists across container restarts and upgrades.
+
 ## License
 
 MIT

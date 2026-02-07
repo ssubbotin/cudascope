@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import GPUCard from '$lib/components/GPUCard.svelte';
 	import HostCard from '$lib/components/HostCard.svelte';
 	import ProcessList from '$lib/components/ProcessList.svelte';
@@ -112,6 +112,7 @@
 	);
 
 	let refreshInterval: ReturnType<typeof setInterval>;
+	let initialized = $state(false);
 
 	function setupRefresh() {
 		clearInterval(refreshInterval);
@@ -120,9 +121,14 @@
 		}
 	}
 
-	onMount(() => {
-		loadHistory(selectedRange);
-		setupRefresh();
+	// Wait for devices to be populated (fetchStatus in layout is async)
+	// then trigger initial history load
+	$effect(() => {
+		if (filteredDevices.length > 0 && !initialized) {
+			initialized = true;
+			loadHistory(selectedRange);
+			setupRefresh();
+		}
 	});
 
 	onDestroy(() => {

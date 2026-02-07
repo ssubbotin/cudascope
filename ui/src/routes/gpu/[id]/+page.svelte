@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { onMount, onDestroy } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import ProcessList from '$lib/components/ProcessList.svelte';
@@ -63,6 +63,7 @@
 	]);
 
 	let refreshInterval: ReturnType<typeof setInterval>;
+	let initialized = $state(false);
 
 	function setupRefresh() {
 		clearInterval(refreshInterval);
@@ -71,9 +72,13 @@
 		}
 	}
 
-	onMount(() => {
-		loadHistory(selectedRange);
-		setupRefresh();
+	// Wait for device to be populated (fetchStatus in layout is async)
+	$effect(() => {
+		if (device && !initialized) {
+			initialized = true;
+			loadHistory(selectedRange);
+			setupRefresh();
+		}
 	});
 
 	onDestroy(() => {
