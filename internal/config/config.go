@@ -19,6 +19,10 @@ type Config struct {
 	Retention1h     time.Duration
 	DevMode         bool
 	UIDir           string
+	Auth            string // "user:password" for basic auth (empty = disabled)
+	AlertTempMax    int    // temperature alert threshold (°C, 0 = disabled)
+	AlertGPUUtil    int    // GPU utilization alert threshold (%, 0 = disabled)
+	AlertMemUtil    int    // memory utilization alert threshold (%, 0 = disabled)
 }
 
 func Load() *Config {
@@ -36,6 +40,10 @@ func Load() *Config {
 	flag.DurationVar(&cfg.Retention1h, "retention-1h", envOrDefaultDuration("CUDASCOPE_RETENTION_1H", 365*24*time.Hour), "1-hour rollup retention")
 	flag.BoolVar(&cfg.DevMode, "dev", false, "development mode (serve UI from filesystem)")
 	flag.StringVar(&cfg.UIDir, "ui-dir", "ui/build", "UI directory (dev mode)")
+	flag.StringVar(&cfg.Auth, "auth", envOrDefault("CUDASCOPE_AUTH", ""), "basic auth credentials (user:password)")
+	flag.IntVar(&cfg.AlertTempMax, "alert-temp", envOrDefaultInt("CUDASCOPE_ALERT_TEMP", 0), "temperature alert threshold °C (0=disabled)")
+	flag.IntVar(&cfg.AlertGPUUtil, "alert-gpu-util", envOrDefaultInt("CUDASCOPE_ALERT_GPU_UTIL", 0), "GPU utilization alert threshold % (0=disabled)")
+	flag.IntVar(&cfg.AlertMemUtil, "alert-mem-util", envOrDefaultInt("CUDASCOPE_ALERT_MEM_UTIL", 0), "memory utilization alert threshold % (0=disabled)")
 
 	flag.Parse()
 	return cfg

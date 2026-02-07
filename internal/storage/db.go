@@ -86,8 +86,9 @@ func (db *DB) migrate() error {
 	return nil
 }
 
-// Close closes the database.
+// Close checkpoints WAL and closes the database.
 func (db *DB) Close() error {
+	_, _ = db.conn.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	return db.conn.Close()
 }
 

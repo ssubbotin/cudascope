@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { connected } from '$lib/stores/websocket';
-	import { nodes } from '$lib/stores/metrics';
+	import { nodes, alerts } from '$lib/stores/metrics';
 	import { themePreference, cycleTheme } from '$lib/stores/theme';
 
 	const themeIcons: Record<string, string> = {
@@ -12,6 +12,7 @@
 	let iconPath = $derived(themeIcons[$themePreference] || themeIcons.dark);
 	let onlineNodes = $derived($nodes.filter((n) => n.online).length);
 	let totalNodes = $derived($nodes.length);
+	let alertCount = $derived($alerts.length);
 </script>
 
 <nav class="border-b border-border px-4 sm:px-6 py-3 flex items-center justify-between bg-bg-secondary/50 backdrop-blur-sm sticky top-0 z-50">
@@ -24,6 +25,17 @@
 	</a>
 
 	<div class="flex items-center gap-3">
+		{#if alertCount > 0}
+			<div class="flex items-center gap-1.5 text-xs text-red" title="{alertCount} active alert(s)">
+				<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+					<line x1="12" y1="9" x2="12" y2="13"/>
+					<line x1="12" y1="17" x2="12.01" y2="17"/>
+				</svg>
+				<span>{alertCount}</span>
+			</div>
+		{/if}
+
 		{#if totalNodes > 1}
 			<div class="flex items-center gap-1.5 text-xs text-text-muted">
 				<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

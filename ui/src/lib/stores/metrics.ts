@@ -63,6 +63,14 @@ export interface Node {
 	online: boolean;
 }
 
+export interface Alert {
+	node_id: string;
+	gpu_id: number;
+	metric: string;
+	value: number;
+	threshold: number;
+}
+
 // Helper: create a composite key for multi-node GPU identification
 export function gpuKey(nodeId: string | undefined, gpuId: number): string {
 	return `${nodeId || 'local'}:${gpuId}`;
@@ -75,6 +83,7 @@ export const devices = writable<GPUDevice[]>([]);
 export const latestGPU = writable<GPUMetrics[]>([]);
 export const latestHosts = writable<Map<string, HostMetrics>>(new Map());
 export const processes = writable<GPUProcess[]>([]);
+export const alerts = writable<Alert[]>([]);
 
 // Sparkline buffers: keep last 120 readings per GPU (keyed by "node:gpu_id")
 const SPARKLINE_SIZE = 120;
@@ -149,6 +158,7 @@ export async function fetchStatus() {
 			latestHosts.set(map);
 		}
 		if (data.processes) processes.set(data.processes);
+		if (data.alerts) alerts.set(data.alerts);
 	} catch (e) {
 		console.error('Failed to fetch status:', e);
 	}

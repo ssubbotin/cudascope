@@ -9,24 +9,47 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/storage"
 )
 
+// AlertConfig holds configurable alert thresholds.
+type AlertConfig struct {
+	TempMax int // °C, 0 = disabled
+	GPUUtil int // %, 0 = disabled
+	MemUtil int // %, 0 = disabled
+}
+
+// Alert represents an active alert.
+type Alert struct {
+	NodeID  string `json:"node_id"`
+	GPUID   int    `json:"gpu_id"`
+	Metric  string `json:"metric"`  // "temperature", "gpu_util", "mem_util"
+	Value   float64 `json:"value"`
+	Thresh  float64 `json:"threshold"`
+}
+
 // Server is the HTTP API server.
 type Server struct {
-	store   *storage.DB
-	hub     *Hub
-	mux     *http.ServeMux
-	uiFS    fs.FS // embedded or filesystem UI
-	devMode bool
-	uiDir   string
+	store    *storage.DB
+	hub      *Hub
+	mux      *http.ServeMux
+	uiFS     fs.FS // embedded or filesystem UI
+	devMode  bool
+	uiDir    string
+	authUser string // basic auth (empty = disabled)
+	authPass string
+	alerts   AlertConfig
+
+	alertsMu     sync.RWMutex
+	activeAlerts []Alert
 }
 
 // NewServer creates a new API server.
-func NewServer(store *storage.DB, hub *Hub, uiFS fs.FS, devMode bool, uiDir string) *Server {
+func NewServer(store *storage.DB, hub *Hub, uiFS fs.FS, devMode bool, uiDir string, auth string, alertCfg AlertConfig) *Server {
 	s := &Server{
 		store:   store,
 		hub:     hub,
@@ -34,6 +57,14 @@ func NewServer(store *storage.DB, hub *Hub, uiFS fs.FS, devMode bool, uiDir stri
 		uiFS:    uiFS,
 		devMode: devMode,
 		uiDir:   uiDir,
+		alerts:  alertCfg,
+	}
+	if auth != "" {
+		if parts := strings.SplitN(auth, ":", 2); len(parts) == 2 {
+			s.authUser = parts[0]
+			s.authPass = parts[1]
+			log.Printf("basic auth enabled for user %q", s.authUser)
+		}
 	}
 	s.routes()
 	return s
@@ -46,8 +77,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/gpus", s.handleGPUs)
 	s.mux.HandleFunc("/api/v1/gpus/", s.handleGPURoute)
 	s.mux.HandleFunc("/api/v1/host/metrics", s.handleHostMetrics)
+	s.mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
 	s.mux.HandleFunc("/api/v1/ws", s.hub.HandleWS)
 	s.mux.HandleFunc("/api/v1/healthz", s.handleHealthz)
+	s.mux.HandleFunc("/metrics", s.handlePrometheus)
 
 	// Ingest endpoints (for agent -> hub communication)
 	s.mux.HandleFunc("/api/v1/ingest/register", s.handleIngestRegister)
@@ -88,29 +121,42 @@ func (s *Server) spaHandler() http.Handler {
 	})
 }
 
-// ListenAndServe starts the HTTP server.
-func (s *Server) ListenAndServe(port int) error {
+// HTTPServer creates the configured *http.Server (caller starts and shuts it down).
+func (s *Server) HTTPServer(port int) *http.Server {
 	addr := fmt.Sprintf(":%d", port)
-	log.Printf("HTTP server listening on %s", addr)
-	srv := &http.Server{
+	return &http.Server{
 		Addr:         addr,
-		Handler:      s.corsMiddleware(s.mux),
+		Handler:      s.middleware(s.mux),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	return srv.ListenAndServe()
 }
 
-func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// CORS
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+
+		// Basic auth (skip healthz and ingest endpoints)
+		if s.authUser != "" {
+			path := r.URL.Path
+			if path != "/api/v1/healthz" && !strings.HasPrefix(path, "/api/v1/ingest/") {
+				user, pass, ok := r.BasicAuth()
+				if !ok || user != s.authUser || pass != s.authPass {
+					w.Header().Set("WWW-Authenticate", `Basic realm="CudaScope"`)
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -167,12 +213,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		procs = filterProcByNode(procs, nodeFilter)
 	}
 
+	// Check alerts against latest GPU metrics
+	s.checkAlerts(gpus)
+
+	s.alertsMu.RLock()
+	alerts := s.activeAlerts
+	s.alertsMu.RUnlock()
+
 	resp := map[string]any{
 		"nodes":     nodes,
 		"devices":   devices,
 		"gpus":      gpus,
 		"hosts":     hosts,
 		"processes": procs,
+		"alerts":    alerts,
+	}
+	if alerts == nil {
+		resp["alerts"] = []struct{}{}
 	}
 	writeJSON(w, resp)
 }
@@ -325,10 +382,11 @@ func (s *Server) handleIngestGPUMetrics(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Update node last_seen and broadcast to WebSocket clients
+	// Update node last_seen, check alerts, and broadcast to WebSocket clients
 	if len(metrics) > 0 {
 		nodeID := metrics[0].NodeID
 		s.store.UpdateNodeSeen(nodeID)
+		s.checkAlerts(metrics)
 
 		s.hub.Broadcast(collector.Snapshot{
 			Type:      "gpu_metrics",
@@ -400,6 +458,111 @@ func (s *Server) handleIngestGPUProcesses(w http.ResponseWriter, r *http.Request
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// --- Prometheus ---
+
+func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
+	gpus, _ := s.store.GetLatestGPUMetrics()
+	devices, _ := s.store.GetGPUDevices("")
+	hosts, _ := s.store.GetLatestHostMetrics()
+
+	// Build device name lookup
+	nameMap := make(map[string]string)
+	for _, d := range devices {
+		key := fmt.Sprintf("%s:%d", d.NodeID, d.ID)
+		nameMap[key] = d.Name
+	}
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+	for _, g := range gpus {
+		node := g.NodeID
+		if node == "" {
+			node = "local"
+		}
+		id := strconv.Itoa(g.GPUID)
+		name := nameMap[fmt.Sprintf("%s:%d", node, g.GPUID)]
+		labels := fmt.Sprintf(`node_id="%s",gpu_id="%s",gpu_name="%s"`, node, id, name)
+
+		fmt.Fprintf(w, "cudascope_gpu_utilization_percent{%s} %.1f\n", labels, g.GPUUtil)
+		fmt.Fprintf(w, "cudascope_gpu_memory_used_mib{%s} %d\n", labels, g.MemUsed)
+		fmt.Fprintf(w, "cudascope_gpu_memory_util_percent{%s} %.1f\n", labels, g.MemUtil)
+		fmt.Fprintf(w, "cudascope_gpu_temperature_celsius{%s} %d\n", labels, g.Temperature)
+		fmt.Fprintf(w, "cudascope_gpu_fan_speed_percent{%s} %d\n", labels, g.FanSpeed)
+		fmt.Fprintf(w, "cudascope_gpu_power_draw_watts{%s} %.1f\n", labels, g.PowerDraw)
+		fmt.Fprintf(w, "cudascope_gpu_power_limit_watts{%s} %.1f\n", labels, g.PowerLimit)
+		fmt.Fprintf(w, "cudascope_gpu_clock_graphics_mhz{%s} %d\n", labels, g.ClockGfx)
+		fmt.Fprintf(w, "cudascope_gpu_clock_memory_mhz{%s} %d\n", labels, g.ClockMem)
+		fmt.Fprintf(w, "cudascope_gpu_pcie_tx_kbps{%s} %d\n", labels, g.PCIeTx)
+		fmt.Fprintf(w, "cudascope_gpu_pcie_rx_kbps{%s} %d\n", labels, g.PCIeRx)
+		fmt.Fprintf(w, "cudascope_gpu_pstate{%s} %d\n", labels, g.PState)
+		fmt.Fprintf(w, "cudascope_gpu_encoder_util_percent{%s} %.1f\n", labels, g.EncoderUtil)
+		fmt.Fprintf(w, "cudascope_gpu_decoder_util_percent{%s} %.1f\n", labels, g.DecoderUtil)
+	}
+
+	for _, h := range hosts {
+		node := h.NodeID
+		if node == "" {
+			node = "local"
+		}
+		labels := fmt.Sprintf(`node_id="%s"`, node)
+		fmt.Fprintf(w, "cudascope_host_cpu_percent{%s} %.1f\n", labels, h.CPUPercent)
+		fmt.Fprintf(w, "cudascope_host_memory_used_bytes{%s} %d\n", labels, h.MemUsed)
+		fmt.Fprintf(w, "cudascope_host_memory_total_bytes{%s} %d\n", labels, h.MemTotal)
+		fmt.Fprintf(w, "cudascope_host_load_1m{%s} %.2f\n", labels, h.Load1m)
+		fmt.Fprintf(w, "cudascope_host_load_5m{%s} %.2f\n", labels, h.Load5m)
+		fmt.Fprintf(w, "cudascope_host_load_15m{%s} %.2f\n", labels, h.Load15m)
+	}
+}
+
+// --- Alerts ---
+
+func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
+	s.alertsMu.RLock()
+	alerts := s.activeAlerts
+	s.alertsMu.RUnlock()
+
+	resp := map[string]any{
+		"config": map[string]int{
+			"temp_max": s.alerts.TempMax,
+			"gpu_util": s.alerts.GPUUtil,
+			"mem_util": s.alerts.MemUtil,
+		},
+		"alerts": alerts,
+	}
+	if alerts == nil {
+		resp["alerts"] = []struct{}{}
+	}
+	writeJSON(w, resp)
+}
+
+// checkAlerts evaluates current GPU metrics against thresholds.
+func (s *Server) checkAlerts(gpus []collector.GPUMetrics) {
+	if s.alerts.TempMax == 0 && s.alerts.GPUUtil == 0 && s.alerts.MemUtil == 0 {
+		return
+	}
+
+	var alerts []Alert
+	for _, g := range gpus {
+		node := g.NodeID
+		if node == "" {
+			node = "local"
+		}
+		if s.alerts.TempMax > 0 && g.Temperature >= s.alerts.TempMax {
+			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "temperature", Value: float64(g.Temperature), Thresh: float64(s.alerts.TempMax)})
+		}
+		if s.alerts.GPUUtil > 0 && g.GPUUtil >= float64(s.alerts.GPUUtil) {
+			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "gpu_util", Value: g.GPUUtil, Thresh: float64(s.alerts.GPUUtil)})
+		}
+		if s.alerts.MemUtil > 0 && g.MemUtil >= float64(s.alerts.MemUtil) {
+			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "mem_util", Value: g.MemUtil, Thresh: float64(s.alerts.MemUtil)})
+		}
+	}
+
+	s.alertsMu.Lock()
+	s.activeAlerts = alerts
+	s.alertsMu.Unlock()
 }
 
 // --- Helpers ---

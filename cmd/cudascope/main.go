@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	cudascope "github.com/sergey/cudascope"
 	"github.com/sergey/cudascope/internal/agent"
@@ -43,22 +44,34 @@ func main() {
 		cancel()
 	}()
 
+	var httpSrv *http.Server
+
 	switch cfg.Mode {
 	case "standalone":
-		runStandalone(ctx, cancel, cfg)
+		httpSrv = runStandalone(ctx, cancel, cfg)
 	case "hub":
-		runHub(ctx, cancel, cfg)
+		httpSrv = runHub(ctx, cancel, cfg)
 	case "agent":
-		runAgent(ctx, cancel, cfg)
+		httpSrv = runAgent(ctx, cancel, cfg)
 	default:
 		log.Fatalf("unknown mode: %s", cfg.Mode)
 	}
 
 	<-ctx.Done()
+
+	// Graceful HTTP shutdown (5s deadline)
+	if httpSrv != nil {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutCancel()
+		if err := httpSrv.Shutdown(shutCtx); err != nil {
+			log.Printf("HTTP shutdown error: %v", err)
+		}
+	}
+
 	log.Println("CudaScope stopped")
 }
 
-func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) {
+func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) *http.Server {
 	// Open database
 	db, err := storage.Open(cfg.DataDir)
 	if err != nil {
@@ -103,15 +116,18 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 
 	// Start API server
 	server := newAPIServer(db, hub, cfg)
+	httpSrv := server.HTTPServer(cfg.Port)
 	go func() {
-		if err := server.ListenAndServe(cfg.Port); err != nil {
+		log.Printf("HTTP server listening on :%d", cfg.Port)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("server error: %v", err)
 			cancel()
 		}
 	}()
+	return httpSrv
 }
 
-func runHub(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) {
+func runHub(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) *http.Server {
 	// Open database
 	db, err := storage.Open(cfg.DataDir)
 	if err != nil {
@@ -133,15 +149,18 @@ func runHub(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) 
 
 	// Start API server (with ingest endpoints)
 	server := newAPIServer(db, hub, cfg)
+	httpSrv := server.HTTPServer(cfg.Port)
 	go func() {
-		if err := server.ListenAndServe(cfg.Port); err != nil {
+		log.Printf("HTTP server listening on :%d", cfg.Port)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("server error: %v", err)
 			cancel()
 		}
 	}()
+	return httpSrv
 }
 
-func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) {
+func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) *http.Server {
 	if cfg.HubURL == "" {
 		log.Fatalf("agent mode requires --hub-url")
 	}
@@ -186,25 +205,34 @@ func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	httpSrv := &http.Server{
+		Addr:    fmt.Sprintf(":%d", cfg.Port),
+		Handler: mux,
+	}
 	go func() {
-		addr := fmt.Sprintf(":%d", cfg.Port)
-		log.Printf("agent health endpoint on %s", addr)
-		if err := http.ListenAndServe(addr, mux); err != nil {
+		log.Printf("agent health endpoint on :%d", cfg.Port)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("health server error: %v", err)
 		}
 	}()
+	return httpSrv
 }
 
 func newAPIServer(db *storage.DB, hub *api.Hub, cfg *config.Config) *api.Server {
+	alertCfg := api.AlertConfig{
+		TempMax: cfg.AlertTempMax,
+		GPUUtil: cfg.AlertGPUUtil,
+		MemUtil: cfg.AlertMemUtil,
+	}
 	if cfg.DevMode {
-		return api.NewServer(db, hub, nil, true, cfg.UIDir)
+		return api.NewServer(db, hub, nil, true, cfg.UIDir, cfg.Auth, alertCfg)
 	}
 	fs, err := cudascope.UIFS()
 	if err != nil {
 		log.Printf("warning: embedded UI not available: %v", err)
-		return api.NewServer(db, hub, nil, false, "")
+		return api.NewServer(db, hub, nil, false, "", cfg.Auth, alertCfg)
 	}
-	return api.NewServer(db, hub, fs, false, "")
+	return api.NewServer(db, hub, fs, false, "", cfg.Auth, alertCfg)
 }
 
 func logDevices(devices []collector.GPUDevice) {
