@@ -11,6 +11,7 @@ type Config struct {
 	Port            int
 	DataDir         string
 	HubURL          string
+	NodeID          string
 	CollectInterval time.Duration
 	HostInterval    time.Duration
 	RetentionRaw    time.Duration
@@ -27,6 +28,7 @@ func Load() *Config {
 	flag.IntVar(&cfg.Port, "port", envOrDefaultInt("CUDASCOPE_PORT", 9090), "HTTP listen port")
 	flag.StringVar(&cfg.DataDir, "data-dir", envOrDefault("CUDASCOPE_DATA_DIR", "/data"), "data directory for SQLite")
 	flag.StringVar(&cfg.HubURL, "hub-url", envOrDefault("CUDASCOPE_HUB_URL", ""), "hub URL (agent mode)")
+	flag.StringVar(&cfg.NodeID, "node-id", envOrDefault("CUDASCOPE_NODE_ID", ""), "node identifier (default: hostname)")
 	flag.DurationVar(&cfg.CollectInterval, "collect-interval", envOrDefaultDuration("CUDASCOPE_COLLECT_INTERVAL", time.Second), "GPU metric collection interval")
 	flag.DurationVar(&cfg.HostInterval, "host-interval", envOrDefaultDuration("CUDASCOPE_HOST_INTERVAL", 5*time.Second), "host metric collection interval")
 	flag.DurationVar(&cfg.RetentionRaw, "retention-raw", envOrDefaultDuration("CUDASCOPE_RETENTION_RAW", 24*time.Hour), "raw metrics retention")

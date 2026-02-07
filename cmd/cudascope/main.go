@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	cudascope "github.com/sergey/cudascope"
+	"github.com/sergey/cudascope/internal/agent"
 	"github.com/sergey/cudascope/internal/api"
 	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/config"
@@ -42,32 +43,49 @@ func main() {
 		cancel()
 	}()
 
+	switch cfg.Mode {
+	case "standalone":
+		runStandalone(ctx, cancel, cfg)
+	case "hub":
+		runHub(ctx, cancel, cfg)
+	case "agent":
+		runAgent(ctx, cancel, cfg)
+	default:
+		log.Fatalf("unknown mode: %s", cfg.Mode)
+	}
+
+	<-ctx.Done()
+	log.Println("CudaScope stopped")
+}
+
+func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) {
 	// Open database
 	db, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
-	defer db.Close()
+	go func() { <-ctx.Done(); db.Close() }()
+
+	// Register local node
+	hostname, _ := os.Hostname()
+	db.RegisterNode("local", hostname, 0)
 
 	// Initialize GPU collector
 	gpuCol, err := collector.NewGPUCollector()
 	if err != nil {
 		log.Fatalf("failed to initialize GPU collector: %v", err)
 	}
-	defer gpuCol.Shutdown()
+	go func() { <-ctx.Done(); gpuCol.Shutdown() }()
 
-	// Register GPU devices
-	if err := db.RegisterGPUDevices(gpuCol.Devices()); err != nil {
+	// Register GPU devices under 'local' node
+	if err := db.RegisterGPUDevices("local", gpuCol.Devices()); err != nil {
 		log.Fatalf("failed to register GPU devices: %v", err)
 	}
-	log.Printf("discovered %d GPU(s)", len(gpuCol.Devices()))
-	for _, d := range gpuCol.Devices() {
-		log.Printf("  GPU %d: %s (%d MiB, driver %s)", d.ID, d.Name, d.MemTotal, d.DriverVer)
-	}
+	db.RegisterNode("local", hostname, len(gpuCol.Devices()))
+	logDevices(gpuCol.Devices())
 
 	// Host collector
-	hostname, _ := os.Hostname()
-	hostCol := collector.NewHostCollector(hostname)
+	hostCol := collector.NewHostCollector("local")
 
 	// WebSocket hub
 	hub := api.NewHub()
@@ -84,26 +102,114 @@ func main() {
 	})
 
 	// Start API server
-	var server *api.Server
-	if cfg.DevMode {
-		server = api.NewServer(db, hub, nil, true, cfg.UIDir)
-	} else {
-		fs, err := cudascope.UIFS()
-		if err != nil {
-			log.Printf("warning: embedded UI not available: %v", err)
-			server = api.NewServer(db, hub, nil, false, "")
-		} else {
-			server = api.NewServer(db, hub, fs, false, "")
-		}
-	}
-
+	server := newAPIServer(db, hub, cfg)
 	go func() {
 		if err := server.ListenAndServe(cfg.Port); err != nil {
 			log.Printf("server error: %v", err)
 			cancel()
 		}
 	}()
+}
 
-	<-ctx.Done()
-	log.Println("CudaScope stopped")
+func runHub(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) {
+	// Open database
+	db, err := storage.Open(cfg.DataDir)
+	if err != nil {
+		log.Fatalf("failed to open database: %v", err)
+	}
+	go func() { <-ctx.Done(); db.Close() }()
+
+	log.Println("running in hub mode — waiting for agent connections")
+
+	// WebSocket hub
+	hub := api.NewHub()
+
+	// Start retention
+	go db.RunRetention(ctx, storage.RetentionConfig{
+		Raw: cfg.RetentionRaw,
+		M1:  cfg.Retention1m,
+		H1:  cfg.Retention1h,
+	})
+
+	// Start API server (with ingest endpoints)
+	server := newAPIServer(db, hub, cfg)
+	go func() {
+		if err := server.ListenAndServe(cfg.Port); err != nil {
+			log.Printf("server error: %v", err)
+			cancel()
+		}
+	}()
+}
+
+func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) {
+	if cfg.HubURL == "" {
+		log.Fatalf("agent mode requires --hub-url")
+	}
+
+	// Determine node ID
+	nodeID := cfg.NodeID
+	if nodeID == "" {
+		nodeID, _ = os.Hostname()
+	}
+	log.Printf("agent node_id=%s, hub=%s", nodeID, cfg.HubURL)
+
+	// Initialize GPU collector
+	gpuCol, err := collector.NewGPUCollector()
+	if err != nil {
+		log.Fatalf("failed to initialize GPU collector: %v", err)
+	}
+	go func() { <-ctx.Done(); gpuCol.Shutdown() }()
+
+	logDevices(gpuCol.Devices())
+
+	// Host collector
+	hostCol := collector.NewHostCollector(nodeID)
+
+	// Agent sink (pushes metrics to hub)
+	agentSink := agent.New(cfg.HubURL, nodeID)
+
+	// Register with hub (retries until successful)
+	go func() {
+		if err := agentSink.Register(ctx, gpuCol.Devices()); err != nil {
+			log.Printf("registration cancelled: %v", err)
+			return
+		}
+	}()
+
+	// Start collector with agent sink (no broadcast — no local WS clients)
+	col := collector.New(gpuCol, hostCol, agentSink, nil, cfg.CollectInterval, cfg.HostInterval)
+	go col.Run(ctx)
+
+	// Minimal health endpoint for Docker healthcheck
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+	go func() {
+		addr := fmt.Sprintf(":%d", cfg.Port)
+		log.Printf("agent health endpoint on %s", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Printf("health server error: %v", err)
+		}
+	}()
+}
+
+func newAPIServer(db *storage.DB, hub *api.Hub, cfg *config.Config) *api.Server {
+	if cfg.DevMode {
+		return api.NewServer(db, hub, nil, true, cfg.UIDir)
+	}
+	fs, err := cudascope.UIFS()
+	if err != nil {
+		log.Printf("warning: embedded UI not available: %v", err)
+		return api.NewServer(db, hub, nil, false, "")
+	}
+	return api.NewServer(db, hub, fs, false, "")
+}
+
+func logDevices(devices []collector.GPUDevice) {
+	log.Printf("discovered %d GPU(s)", len(devices))
+	for _, d := range devices {
+		log.Printf("  GPU %d: %s (%d MiB, driver %s)", d.ID, d.Name, d.MemTotal, d.DriverVer)
+	}
 }

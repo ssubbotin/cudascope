@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { connected } from '$lib/stores/websocket';
+	import { nodes } from '$lib/stores/metrics';
 	import { themePreference, cycleTheme } from '$lib/stores/theme';
 
 	const themeIcons: Record<string, string> = {
@@ -9,6 +10,8 @@
 	};
 
 	let iconPath = $derived(themeIcons[$themePreference] || themeIcons.dark);
+	let onlineNodes = $derived($nodes.filter((n) => n.online).length);
+	let totalNodes = $derived($nodes.length);
 </script>
 
 <nav class="border-b border-border px-4 sm:px-6 py-3 flex items-center justify-between bg-bg-secondary/50 backdrop-blur-sm sticky top-0 z-50">
@@ -21,6 +24,18 @@
 	</a>
 
 	<div class="flex items-center gap-3">
+		{#if totalNodes > 1}
+			<div class="flex items-center gap-1.5 text-xs text-text-muted">
+				<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<rect x="2" y="2" width="20" height="8" rx="2"/>
+					<rect x="2" y="14" width="20" height="8" rx="2"/>
+					<circle cx="6" cy="6" r="1" fill="currentColor"/>
+					<circle cx="6" cy="18" r="1" fill="currentColor"/>
+				</svg>
+				<span>{onlineNodes}/{totalNodes} nodes</span>
+			</div>
+		{/if}
+
 		<div class="flex items-center gap-2 text-sm">
 			<div class="w-2 h-2 rounded-full {$connected ? 'bg-green' : 'bg-red'} animate-pulse"></div>
 			<span class="text-text-muted hidden sm:inline">{$connected ? 'Live' : 'Disconnected'}</span>

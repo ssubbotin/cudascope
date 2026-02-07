@@ -2,6 +2,7 @@ package collector
 
 // GPUDevice holds static GPU info discovered at startup.
 type GPUDevice struct {
+	NodeID    string `json:"node_id"`
 	ID        int    `json:"id"`
 	UUID      string `json:"uuid"`
 	Name      string `json:"name"`
@@ -11,6 +12,7 @@ type GPUDevice struct {
 
 // GPUMetrics holds a single snapshot of GPU metrics.
 type GPUMetrics struct {
+	NodeID      string  `json:"node_id,omitempty"`
 	Timestamp   int64   `json:"ts"`
 	GPUID       int     `json:"gpu_id"`
 	GPUUtil     float64 `json:"gpu_util"`
@@ -31,6 +33,7 @@ type GPUMetrics struct {
 
 // GPUProcess represents a process using the GPU.
 type GPUProcess struct {
+	NodeID    string `json:"node_id,omitempty"`
 	Timestamp int64  `json:"ts"`
 	GPUID     int    `json:"gpu_id"`
 	PID       uint32 `json:"pid"`
@@ -40,25 +43,36 @@ type GPUProcess struct {
 
 // HostMetrics holds a snapshot of host-level metrics.
 type HostMetrics struct {
-	Timestamp int64   `json:"ts"`
-	NodeID    string  `json:"node_id"`
+	Timestamp  int64   `json:"ts"`
+	NodeID     string  `json:"node_id"`
 	CPUPercent float64 `json:"cpu_percent"`
-	MemUsed   uint64  `json:"mem_used"`
-	MemTotal  uint64  `json:"mem_total"`
-	DiskUsed  uint64  `json:"disk_used"`
-	DiskTotal uint64  `json:"disk_total"`
-	NetRx     uint64  `json:"net_rx"` // bytes/s
-	NetTx     uint64  `json:"net_tx"` // bytes/s
-	Load1m    float64 `json:"load_1m"`
-	Load5m    float64 `json:"load_5m"`
-	Load15m   float64 `json:"load_15m"`
+	MemUsed    uint64  `json:"mem_used"`
+	MemTotal   uint64  `json:"mem_total"`
+	DiskUsed   uint64  `json:"disk_used"`
+	DiskTotal  uint64  `json:"disk_total"`
+	NetRx      uint64  `json:"net_rx"` // bytes/s
+	NetTx      uint64  `json:"net_tx"` // bytes/s
+	Load1m     float64 `json:"load_1m"`
+	Load5m     float64 `json:"load_5m"`
+	Load15m    float64 `json:"load_15m"`
 }
 
 // Snapshot is a complete point-in-time reading pushed via WebSocket.
 type Snapshot struct {
-	Type       string       `json:"type"`
-	Timestamp  int64        `json:"ts"`
-	GPUs       []GPUMetrics `json:"gpus,omitempty"`
-	Host       *HostMetrics `json:"host,omitempty"`
-	Processes  []GPUProcess `json:"processes,omitempty"`
+	Type      string       `json:"type"`
+	NodeID    string       `json:"node_id,omitempty"`
+	Timestamp int64        `json:"ts"`
+	GPUs      []GPUMetrics `json:"gpus,omitempty"`
+	Host      *HostMetrics `json:"host,omitempty"`
+	Processes []GPUProcess `json:"processes,omitempty"`
+}
+
+// Node represents a registered agent node.
+type Node struct {
+	NodeID    string `json:"node_id"`
+	Hostname  string `json:"hostname"`
+	GPUCount  int    `json:"gpu_count"`
+	FirstSeen int64  `json:"first_seen"`
+	LastSeen  int64  `json:"last_seen"`
+	Online    bool   `json:"online"`
 }

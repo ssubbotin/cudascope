@@ -8,19 +8,27 @@
 		device: GPUDevice;
 		metrics: GPUMetrics | undefined;
 		history: GPUMetrics[];
+		showNode?: boolean;
 	}
 
-	let { device, metrics, history }: Props = $props();
+	let { device, metrics, history, showNode = false }: Props = $props();
 
 	let utilHistory = $derived(history.map((m) => m.gpu_util));
-	let memHistory = $derived(history.map((m) => m.mem_used));
+	let detailHref = $derived(
+		showNode ? `/gpu/${device.id}?node=${device.node_id}` : `/gpu/${device.id}`
+	);
 </script>
 
-<a href="/gpu/{device.id}" class="block">
+<a href={detailHref} class="block">
 	<div class="bg-bg-card border border-border rounded-xl p-5 hover:border-accent/40 hover:bg-bg-card-hover transition-all duration-200 cursor-pointer">
 		<div class="flex items-center justify-between mb-4">
 			<div>
-				<h3 class="text-sm font-medium text-text-primary">GPU {device.id}</h3>
+				<h3 class="text-sm font-medium text-text-primary">
+					{#if showNode}
+						<span class="text-text-muted">{device.node_id}:</span>
+					{/if}
+					GPU {device.id}
+				</h3>
 				<p class="text-xs text-text-muted mt-0.5">{device.name}</p>
 			</div>
 			{#if metrics}

@@ -5,7 +5,8 @@
 	import ProcessList from '$lib/components/ProcessList.svelte';
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
-	import { devices, latestGPU, latestHost, processes, gpuHistory, fetchGPUHistory, fetchHostHistory } from '$lib/stores/metrics';
+	import NodeSelector from '$lib/components/NodeSelector.svelte';
+	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory } from '$lib/stores/metrics';
 	import type { GPUMetrics, HostMetrics } from '$lib/stores/metrics';
 
 	const GPU_COLORS = ['#38bdf8', '#4ade80', '#fbbf24', '#f87171', '#a78bfa', '#fb923c', '#2dd4bf', '#e879f9'];
@@ -18,23 +19,56 @@
 	let allGPUHistory = $state<Map<number, GPUMetrics[]>>(new Map());
 	let hostHistoryData = $state<HostMetrics[]>([]);
 
-	let gpuMap = $derived(new Map($latestGPU.map((g) => [g.gpu_id, g])));
+	// Filtered views based on selected node
+	let filteredDevices = $derived(
+		$selectedNode === 'all'
+			? $devices
+			: $devices.filter((d) => d.node_id === $selectedNode)
+	);
+
+	let filteredGPU = $derived(
+		$selectedNode === 'all'
+			? $latestGPU
+			: $latestGPU.filter((g) => (g.node_id || 'local') === $selectedNode)
+	);
+
+	let filteredHosts = $derived.by(() => {
+		if ($selectedNode === 'all') {
+			return [...$latestHosts.values()];
+		}
+		const h = $latestHosts.get($selectedNode);
+		return h ? [h] : [];
+	});
+
+	let filteredProcesses = $derived(
+		$selectedNode === 'all'
+			? $processes
+			: $processes.filter((p) => (p.node_id || 'local') === $selectedNode)
+	);
+
+	let gpuMap = $derived(new Map(filteredGPU.map((g) => [gpuKey(g.node_id, g.gpu_id), g])));
 
 	async function loadHistory(range: string) {
 		selectedRange = range;
 		loading = true;
 
-		const promises = $devices.map(async (d) => {
-			const data = await fetchGPUHistory(d.id, range);
-			return [d.id, data] as const;
+		const nodeFilter = $selectedNode === 'all' ? undefined : $selectedNode;
+
+		const promises = filteredDevices.map(async (d) => {
+			const data = await fetchGPUHistory(d.id, range, nodeFilter || d.node_id);
+			return [d, data] as const;
 		});
 
 		const results = await Promise.all(promises);
 		const map = new Map<number, GPUMetrics[]>();
-		for (const [id, data] of results) map.set(id, data);
+		for (const [device, data] of results) {
+			// Use a unique numeric key for chart indexing
+			const key = filteredDevices.indexOf(device);
+			map.set(key, data);
+		}
 		allGPUHistory = map;
 
-		hostHistoryData = await fetchHostHistory(range);
+		hostHistoryData = await fetchHostHistory(range, nodeFilter);
 		loading = false;
 	}
 
@@ -47,18 +81,18 @@
 	});
 
 	let utilSeries = $derived(
-		$devices.map((d, i) => ({
-			label: `GPU ${d.id}`,
+		filteredDevices.map((d, i) => ({
+			label: $nodes.length > 1 ? `${d.node_id}:GPU${d.id}` : `GPU ${d.id}`,
 			color: GPU_COLORS[i % GPU_COLORS.length],
-			data: (allGPUHistory.get(d.id) || []).map((m) => m.gpu_util)
+			data: (allGPUHistory.get(i) || []).map((m) => m.gpu_util)
 		}))
 	);
 
 	let memSeries = $derived(
-		$devices.map((d, i) => ({
-			label: `GPU ${d.id}`,
+		filteredDevices.map((d, i) => ({
+			label: $nodes.length > 1 ? `${d.node_id}:GPU${d.id}` : `GPU ${d.id}`,
 			color: GPU_COLORS[i % GPU_COLORS.length],
-			data: (allGPUHistory.get(d.id) || []).map((m) => m.mem_used)
+			data: (allGPUHistory.get(i) || []).map((m) => m.mem_used)
 		}))
 	);
 
@@ -71,7 +105,7 @@
 	]);
 
 	let maxMem = $derived(
-		$devices.reduce((max, d) => Math.max(max, d.mem_total), 0)
+		filteredDevices.reduce((max, d) => Math.max(max, d.mem_total), 0)
 	);
 	let hostMemTotal = $derived(
 		hostHistoryData.length > 0 ? hostHistoryData[0].mem_total / (1024 * 1024 * 1024) : undefined
@@ -99,6 +133,11 @@
 		autoRefresh = enabled;
 		setupRefresh();
 	}
+
+	function handleNodeChange(nodeId: string) {
+		$selectedNode = nodeId;
+		loadHistory(selectedRange);
+	}
 </script>
 
 <svelte:head>
@@ -106,17 +145,27 @@
 </svelte:head>
 
 <div class="space-y-6">
+	<!-- Node Selector (only shown for multi-node) -->
+	{#if $nodes.length > 1}
+		<div class="flex items-center justify-between flex-wrap gap-2">
+			<NodeSelector nodes={$nodes} selected={$selectedNode} onchange={handleNodeChange} />
+		</div>
+	{/if}
+
 	<!-- GPU + Host Cards -->
 	<section>
 		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-			{#each $devices as device (device.id)}
+			{#each filteredDevices as device (gpuKey(device.node_id, device.id))}
 				<GPUCard
 					{device}
-					metrics={gpuMap.get(device.id)}
-					history={$gpuHistory.get(device.id) || []}
+					metrics={gpuMap.get(gpuKey(device.node_id, device.id))}
+					history={$gpuHistory.get(gpuKey(device.node_id, device.id)) || []}
+					showNode={$nodes.length > 1}
 				/>
 			{/each}
-			<HostCard metrics={$latestHost} />
+			{#each filteredHosts as host (host.node_id)}
+				<HostCard metrics={host} />
+			{/each}
 		</div>
 	</section>
 
@@ -183,5 +232,5 @@
 	{/if}
 
 	<!-- Processes -->
-	<ProcessList processes={$processes} />
+	<ProcessList processes={filteredProcesses} showNode={$nodes.length > 1} />
 </div>

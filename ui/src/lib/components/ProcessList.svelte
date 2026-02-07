@@ -4,9 +4,10 @@
 
 	interface Props {
 		processes: GPUProcess[];
+		showNode?: boolean;
 	}
 
-	let { processes }: Props = $props();
+	let { processes, showNode = false }: Props = $props();
 
 	let sorted = $derived([...processes].sort((a, b) => b.gpu_mem - a.gpu_mem));
 </script>
@@ -18,6 +19,9 @@
 			<table class="w-full text-sm">
 				<thead>
 					<tr class="text-xs text-text-muted border-b border-border">
+						{#if showNode}
+							<th class="text-left pb-2 font-medium">Node</th>
+						{/if}
 						<th class="text-left pb-2 font-medium">GPU</th>
 						<th class="text-left pb-2 font-medium">PID</th>
 						<th class="text-left pb-2 font-medium">Process</th>
@@ -27,6 +31,9 @@
 				<tbody>
 					{#each sorted as proc}
 						<tr class="border-b border-border/50 last:border-0">
+							{#if showNode}
+								<td class="py-1.5 text-text-muted text-xs">{proc.node_id || 'local'}</td>
+							{/if}
 							<td class="py-1.5 font-mono text-text-muted">{proc.gpu_id}</td>
 							<td class="py-1.5 font-mono text-text-secondary">{proc.pid}</td>
 							<td class="py-1.5 text-text-primary">{proc.name}</td>

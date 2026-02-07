@@ -11,15 +11,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/storage"
 )
 
 // Server is the HTTP API server.
 type Server struct {
-	store  *storage.DB
-	hub    *Hub
-	mux    *http.ServeMux
-	uiFS   fs.FS    // embedded or filesystem UI
+	store   *storage.DB
+	hub     *Hub
+	mux     *http.ServeMux
+	uiFS    fs.FS // embedded or filesystem UI
 	devMode bool
 	uiDir   string
 }
@@ -39,12 +40,20 @@ func NewServer(store *storage.DB, hub *Hub, uiFS fs.FS, devMode bool, uiDir stri
 }
 
 func (s *Server) routes() {
+	// Read endpoints
 	s.mux.HandleFunc("/api/v1/status", s.handleStatus)
+	s.mux.HandleFunc("/api/v1/nodes", s.handleNodes)
 	s.mux.HandleFunc("/api/v1/gpus", s.handleGPUs)
 	s.mux.HandleFunc("/api/v1/gpus/", s.handleGPURoute)
 	s.mux.HandleFunc("/api/v1/host/metrics", s.handleHostMetrics)
 	s.mux.HandleFunc("/api/v1/ws", s.hub.HandleWS)
 	s.mux.HandleFunc("/api/v1/healthz", s.handleHealthz)
+
+	// Ingest endpoints (for agent -> hub communication)
+	s.mux.HandleFunc("/api/v1/ingest/register", s.handleIngestRegister)
+	s.mux.HandleFunc("/api/v1/ingest/gpu-metrics", s.handleIngestGPUMetrics)
+	s.mux.HandleFunc("/api/v1/ingest/host-metrics", s.handleIngestHostMetrics)
+	s.mux.HandleFunc("/api/v1/ingest/gpu-processes", s.handleIngestGPUProcesses)
 
 	// Serve UI
 	if s.devMode {
@@ -96,7 +105,7 @@ func (s *Server) ListenAndServe(port int) error {
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -111,21 +120,37 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-// handleStatus returns the current snapshot of all GPUs and host.
+// handleNodes returns the list of known nodes with online status.
+func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
+	nodes, err := s.store.GetNodes()
+	if err != nil {
+		httpError(w, "get nodes: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if nodes == nil {
+		writeJSON(w, []struct{}{})
+		return
+	}
+	writeJSON(w, nodes)
+}
+
+// handleStatus returns the current snapshot of all GPUs, hosts, and nodes.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	nodeFilter := r.URL.Query().Get("node")
+
 	gpus, err := s.store.GetLatestGPUMetrics()
 	if err != nil {
 		httpError(w, "get gpu metrics: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	host, err := s.store.GetLatestHostMetrics()
+	hosts, err := s.store.GetLatestHostMetrics()
 	if err != nil {
 		httpError(w, "get host metrics: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	devices, err := s.store.GetGPUDevices()
+	devices, err := s.store.GetGPUDevices(nodeFilter)
 	if err != nil {
 		httpError(w, "get devices: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -133,10 +158,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	procs, _ := s.store.GetAllGPUProcesses()
 
+	nodes, _ := s.store.GetNodes()
+
+	// Filter by node if specified
+	if nodeFilter != "" {
+		gpus = filterGPUByNode(gpus, nodeFilter)
+		hosts = filterHostByNode(hosts, nodeFilter)
+		procs = filterProcByNode(procs, nodeFilter)
+	}
+
 	resp := map[string]any{
+		"nodes":     nodes,
 		"devices":   devices,
 		"gpus":      gpus,
-		"host":      host,
+		"hosts":     hosts,
 		"processes": procs,
 	}
 	writeJSON(w, resp)
@@ -144,9 +179,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleGPUs lists GPU devices.
 func (s *Server) handleGPUs(w http.ResponseWriter, r *http.Request) {
-	devices, err := s.store.GetGPUDevices()
+	nodeFilter := r.URL.Query().Get("node")
+	devices, err := s.store.GetGPUDevices(nodeFilter)
 	if err != nil {
 		httpError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if devices == nil {
+		writeJSON(w, []struct{}{})
 		return
 	}
 	writeJSON(w, devices)
@@ -180,10 +220,13 @@ func (s *Server) handleGPURoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGPUMetrics(w http.ResponseWriter, r *http.Request, gpuID int) {
 	from, to := parseTimeRange(r)
+	nodeID := r.URL.Query().Get("node")
+
 	metrics, err := s.store.GetGPUMetrics(storage.GPUMetricsQuery{
-		GPUID: gpuID,
-		From:  from,
-		To:    to,
+		GPUID:  gpuID,
+		NodeID: nodeID,
+		From:   from,
+		To:     to,
 	})
 	if err != nil {
 		httpError(w, err.Error(), http.StatusInternalServerError)
@@ -197,7 +240,8 @@ func (s *Server) handleGPUMetrics(w http.ResponseWriter, r *http.Request, gpuID 
 }
 
 func (s *Server) handleGPUProcesses(w http.ResponseWriter, r *http.Request, gpuID int) {
-	procs, err := s.store.GetGPUProcesses(gpuID)
+	nodeID := r.URL.Query().Get("node")
+	procs, err := s.store.GetGPUProcesses(gpuID, nodeID)
 	if err != nil {
 		httpError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -211,7 +255,9 @@ func (s *Server) handleGPUProcesses(w http.ResponseWriter, r *http.Request, gpuI
 
 func (s *Server) handleHostMetrics(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
-	metrics, err := s.store.GetHostMetrics(from, to)
+	nodeID := r.URL.Query().Get("node")
+
+	metrics, err := s.store.GetHostMetrics(from, to, nodeID)
 	if err != nil {
 		httpError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -222,6 +268,141 @@ func (s *Server) handleHostMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, metrics)
 }
+
+// --- Ingest endpoints (agent -> hub) ---
+
+func (s *Server) handleIngestRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		NodeID   string              `json:"node_id"`
+		Hostname string              `json:"hostname"`
+		Devices  []collector.GPUDevice `json:"devices"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		httpError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if payload.NodeID == "" {
+		httpError(w, "node_id required", http.StatusBadRequest)
+		return
+	}
+
+	// Register node
+	if err := s.store.RegisterNode(payload.NodeID, payload.Hostname, len(payload.Devices)); err != nil {
+		httpError(w, "register node: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Register devices
+	if err := s.store.RegisterGPUDevices(payload.NodeID, payload.Devices); err != nil {
+		httpError(w, "register devices: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("agent registered: node=%s gpus=%d", payload.NodeID, len(payload.Devices))
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleIngestGPUMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var metrics []collector.GPUMetrics
+	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
+		httpError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.WriteGPUMetrics(metrics); err != nil {
+		httpError(w, "write gpu metrics: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Update node last_seen and broadcast to WebSocket clients
+	if len(metrics) > 0 {
+		nodeID := metrics[0].NodeID
+		s.store.UpdateNodeSeen(nodeID)
+
+		s.hub.Broadcast(collector.Snapshot{
+			Type:      "gpu_metrics",
+			NodeID:    nodeID,
+			Timestamp: time.Now().Unix(),
+			GPUs:      metrics,
+		})
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleIngestHostMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var m collector.HostMetrics
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		httpError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.WriteHostMetrics(&m); err != nil {
+		httpError(w, "write host metrics: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.store.UpdateNodeSeen(m.NodeID)
+
+	s.hub.Broadcast(collector.Snapshot{
+		Type:      "host_metrics",
+		NodeID:    m.NodeID,
+		Timestamp: time.Now().Unix(),
+		Host:      &m,
+	})
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleIngestGPUProcesses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var procs []collector.GPUProcess
+	if err := json.NewDecoder(r.Body).Decode(&procs); err != nil {
+		httpError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.WriteGPUProcesses(procs); err != nil {
+		httpError(w, "write gpu processes: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(procs) > 0 {
+		nodeID := procs[0].NodeID
+		s.store.UpdateNodeSeen(nodeID)
+
+		s.hub.Broadcast(collector.Snapshot{
+			Type:      "gpu_processes",
+			NodeID:    nodeID,
+			Timestamp: time.Now().Unix(),
+			Processes: procs,
+		})
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// --- Helpers ---
 
 func parseTimeRange(r *http.Request) (from, to int64) {
 	now := time.Now().Unix()
@@ -248,6 +429,36 @@ func parseTimeRange(r *http.Request) (from, to int64) {
 	}
 
 	return from, to
+}
+
+func filterGPUByNode(metrics []collector.GPUMetrics, nodeID string) []collector.GPUMetrics {
+	var filtered []collector.GPUMetrics
+	for _, m := range metrics {
+		if m.NodeID == nodeID {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
+}
+
+func filterHostByNode(metrics []collector.HostMetrics, nodeID string) []collector.HostMetrics {
+	var filtered []collector.HostMetrics
+	for _, m := range metrics {
+		if m.NodeID == nodeID {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
+}
+
+func filterProcByNode(procs []collector.GPUProcess, nodeID string) []collector.GPUProcess {
+	var filtered []collector.GPUProcess
+	for _, p := range procs {
+		if p.NodeID == nodeID {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

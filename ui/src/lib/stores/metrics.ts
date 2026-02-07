@@ -1,7 +1,8 @@
-import { writable, derived, get } from 'svelte/store';
+import { writable, derived } from 'svelte/store';
 import { onMessage } from './websocket';
 
 export interface GPUDevice {
+	node_id: string;
 	id: number;
 	uuid: string;
 	name: string;
@@ -10,6 +11,7 @@ export interface GPUDevice {
 }
 
 export interface GPUMetrics {
+	node_id?: string;
 	ts: number;
 	gpu_id: number;
 	gpu_util: number;
@@ -44,6 +46,7 @@ export interface HostMetrics {
 }
 
 export interface GPUProcess {
+	node_id?: string;
 	ts: number;
 	gpu_id: number;
 	pid: number;
@@ -51,35 +54,68 @@ export interface GPUProcess {
 	gpu_mem: number;
 }
 
+export interface Node {
+	node_id: string;
+	hostname: string;
+	gpu_count: number;
+	first_seen: number;
+	last_seen: number;
+	online: boolean;
+}
+
+// Helper: create a composite key for multi-node GPU identification
+export function gpuKey(nodeId: string | undefined, gpuId: number): string {
+	return `${nodeId || 'local'}:${gpuId}`;
+}
+
 // Stores
+export const nodes = writable<Node[]>([]);
+export const selectedNode = writable<string>('all');
 export const devices = writable<GPUDevice[]>([]);
 export const latestGPU = writable<GPUMetrics[]>([]);
-export const latestHost = writable<HostMetrics | null>(null);
+export const latestHosts = writable<Map<string, HostMetrics>>(new Map());
 export const processes = writable<GPUProcess[]>([]);
 
-// Sparkline buffers: keep last 60 readings per GPU
+// Sparkline buffers: keep last 120 readings per GPU (keyed by "node:gpu_id")
 const SPARKLINE_SIZE = 120;
-export const gpuHistory = writable<Map<number, GPUMetrics[]>>(new Map());
+export const gpuHistory = writable<Map<string, GPUMetrics[]>>(new Map());
 export const hostHistory = writable<HostMetrics[]>([]);
+
+// Backward compat: derived single-host for standalone use
+export const latestHost = derived(latestHosts, ($hosts) => {
+	if ($hosts.size === 0) return null;
+	return $hosts.values().next().value ?? null;
+});
 
 // Process WebSocket messages
 onMessage((data: any) => {
 	if (data.type === 'gpu_metrics' && data.gpus) {
-		latestGPU.set(data.gpus);
+		const nodeId = data.node_id || 'local';
+
+		latestGPU.update((arr) => {
+			// Remove old entries for this node, add new ones
+			const other = arr.filter((g) => (g.node_id || 'local') !== nodeId);
+			return [...other, ...data.gpus.map((g: GPUMetrics) => ({ ...g, node_id: nodeId }))];
+		});
 
 		gpuHistory.update((map) => {
 			for (const gpu of data.gpus) {
-				let arr = map.get(gpu.gpu_id) || [];
-				arr.push(gpu);
+				const key = gpuKey(nodeId, gpu.gpu_id);
+				let arr = map.get(key) || [];
+				arr.push({ ...gpu, node_id: nodeId });
 				if (arr.length > SPARKLINE_SIZE) arr = arr.slice(-SPARKLINE_SIZE);
-				map.set(gpu.gpu_id, arr);
+				map.set(key, arr);
 			}
 			return new Map(map);
 		});
 	}
 
 	if (data.type === 'host_metrics' && data.host) {
-		latestHost.set(data.host);
+		const nodeId = data.host.node_id || data.node_id || 'local';
+		latestHosts.update((map) => {
+			map.set(nodeId, data.host);
+			return new Map(map);
+		});
 		hostHistory.update((arr) => {
 			arr.push(data.host);
 			if (arr.length > SPARKLINE_SIZE) arr = arr.slice(-SPARKLINE_SIZE);
@@ -88,7 +124,12 @@ onMessage((data: any) => {
 	}
 
 	if (data.type === 'gpu_processes' && data.processes) {
-		processes.set(data.processes);
+		const nodeId = data.node_id || 'local';
+		processes.update((arr) => {
+			// Remove old entries for this node, add new ones
+			const other = arr.filter((p) => (p.node_id || 'local') !== nodeId);
+			return [...other, ...data.processes.map((p: GPUProcess) => ({ ...p, node_id: nodeId }))];
+		});
 	}
 });
 
@@ -97,9 +138,16 @@ export async function fetchStatus() {
 	try {
 		const res = await fetch('/api/v1/status');
 		const data = await res.json();
+		if (data.nodes) nodes.set(data.nodes);
 		if (data.devices) devices.set(data.devices);
 		if (data.gpus) latestGPU.set(data.gpus);
-		if (data.host) latestHost.set(data.host);
+		if (data.hosts) {
+			const map = new Map<string, HostMetrics>();
+			for (const h of data.hosts) {
+				map.set(h.node_id, h);
+			}
+			latestHosts.set(map);
+		}
 		if (data.processes) processes.set(data.processes);
 	} catch (e) {
 		console.error('Failed to fetch status:', e);
@@ -107,9 +155,11 @@ export async function fetchStatus() {
 }
 
 // Fetch historical GPU metrics
-export async function fetchGPUHistory(gpuId: number, range: string): Promise<GPUMetrics[]> {
+export async function fetchGPUHistory(gpuId: number, range: string, nodeId?: string): Promise<GPUMetrics[]> {
 	try {
-		const res = await fetch(`/api/v1/gpus/${gpuId}/metrics?range=${range}`);
+		let url = `/api/v1/gpus/${gpuId}/metrics?range=${range}`;
+		if (nodeId) url += `&node=${nodeId}`;
+		const res = await fetch(url);
 		return await res.json();
 	} catch {
 		return [];
@@ -117,9 +167,11 @@ export async function fetchGPUHistory(gpuId: number, range: string): Promise<GPU
 }
 
 // Fetch historical host metrics
-export async function fetchHostHistory(range: string): Promise<HostMetrics[]> {
+export async function fetchHostHistory(range: string, nodeId?: string): Promise<HostMetrics[]> {
 	try {
-		const res = await fetch(`/api/v1/host/metrics?range=${range}`);
+		let url = `/api/v1/host/metrics?range=${range}`;
+		if (nodeId) url += `&node=${nodeId}`;
+		const res = await fetch(url);
 		return await res.json();
 	} catch {
 		return [];

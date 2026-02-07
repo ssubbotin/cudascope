@@ -4,14 +4,15 @@
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import ProcessList from '$lib/components/ProcessList.svelte';
-	import { devices, latestGPU, processes, fetchGPUHistory } from '$lib/stores/metrics';
+	import { devices, latestGPU, processes, fetchGPUHistory, gpuKey } from '$lib/stores/metrics';
 	import type { GPUMetrics } from '$lib/stores/metrics';
 	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor } from '$lib/utils/format';
 
 	let gpuId = $derived(parseInt($page.params.id));
-	let device = $derived($devices.find((d) => d.id === gpuId));
-	let metrics = $derived($latestGPU.find((g) => g.gpu_id === gpuId));
-	let gpuProcs = $derived($processes.filter((p) => p.gpu_id === gpuId));
+	let nodeId = $derived($page.url.searchParams.get('node') || 'local');
+	let device = $derived($devices.find((d) => d.id === gpuId && d.node_id === nodeId));
+	let metrics = $derived($latestGPU.find((g) => g.gpu_id === gpuId && (g.node_id || 'local') === nodeId));
+	let gpuProcs = $derived($processes.filter((p) => p.gpu_id === gpuId && (p.node_id || 'local') === nodeId));
 
 	let selectedRange = $state('5m');
 	let autoRefresh = $state(true);
@@ -21,7 +22,7 @@
 	async function loadHistory(range: string) {
 		selectedRange = range;
 		loading = true;
-		historyData = await fetchGPUHistory(gpuId, range);
+		historyData = await fetchGPUHistory(gpuId, range, nodeId);
 		loading = false;
 	}
 
@@ -86,7 +87,7 @@
 </script>
 
 <svelte:head>
-	<title>CudaScope - GPU {gpuId}</title>
+	<title>CudaScope - {nodeId !== 'local' ? `${nodeId}:` : ''}GPU {gpuId}</title>
 </svelte:head>
 
 <div class="space-y-6">
@@ -95,7 +96,12 @@
 		<div class="flex items-center gap-4">
 			<a href="/" class="text-text-muted hover:text-accent transition-colors text-sm">&larr; Back</a>
 			<div>
-				<h2 class="text-lg font-semibold text-text-primary">GPU {gpuId}: {device?.name || '...'}</h2>
+				<h2 class="text-lg font-semibold text-text-primary">
+					{#if nodeId !== 'local'}
+						<span class="text-text-muted text-sm font-normal">{nodeId} /</span>
+					{/if}
+					GPU {gpuId}: {device?.name || '...'}
+				</h2>
 				<p class="text-xs text-text-muted">{device?.uuid || ''} &middot; Driver {device?.driver_ver || ''}</p>
 			</div>
 		</div>
