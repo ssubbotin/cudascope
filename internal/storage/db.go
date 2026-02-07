@@ -15,6 +15,9 @@ import (
 //go:embed migrations/001_init.sql
 var migration001 string
 
+//go:embed migrations/002_host_rollup.sql
+var migration002 string
+
 // DB wraps a SQLite connection with metrics-specific operations.
 type DB struct {
 	conn *sql.DB
@@ -60,6 +63,14 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 001: %w", err)
 		}
 		log.Println("applied migration 001")
+		version = 1
+	}
+
+	if version < 2 {
+		if _, err := db.conn.Exec(migration002); err != nil {
+			return fmt.Errorf("migration 002: %w", err)
+		}
+		log.Println("applied migration 002")
 	}
 
 	return nil

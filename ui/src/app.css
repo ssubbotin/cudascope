@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 
 @theme {
+	/* Semantic color tokens - dark theme defaults */
 	--color-bg-primary: #0f172a;
 	--color-bg-secondary: #1e293b;
 	--color-bg-card: #1e293b;
@@ -15,19 +16,45 @@
 	--color-yellow: #fbbf24;
 	--color-red: #f87171;
 	--color-orange: #fb923c;
+	--color-chart-grid: #1e293b;
+	--color-chart-axis: #64748b;
+	--color-chart-tick: #334155;
 }
 
 :root {
 	color-scheme: dark;
 }
 
+/* Light theme overrides */
+:root.light {
+	color-scheme: light;
+	--color-bg-primary: #f8fafc;
+	--color-bg-secondary: #ffffff;
+	--color-bg-card: #ffffff;
+	--color-bg-card-hover: #f1f5f9;
+	--color-border: #e2e8f0;
+	--color-text-primary: #0f172a;
+	--color-text-secondary: #475569;
+	--color-text-muted: #94a3b8;
+	--color-accent: #0284c7;
+	--color-accent-hover: #0369a1;
+	--color-green: #16a34a;
+	--color-yellow: #ca8a04;
+	--color-red: #dc2626;
+	--color-orange: #ea580c;
+	--color-chart-grid: #f1f5f9;
+	--color-chart-axis: #94a3b8;
+	--color-chart-tick: #e2e8f0;
+}
+
 body {
 	background-color: var(--color-bg-primary);
 	color: var(--color-text-primary);
 	font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+	transition: background-color 0.2s, color 0.2s;
 }
 
-/* uPlot overrides for dark theme */
+/* uPlot theme-aware overrides */
 .u-wrap {
 	background: transparent !important;
 }
@@ -38,15 +65,15 @@ body {
 .u-legend .u-series td {
 	padding: 1px 4px !important;
 }
-.u-axis {
-	stroke: var(--color-border) !important;
-}
-.u-axis .u-ticks {
-	stroke: var(--color-border) !important;
-}
-.u-axis .u-label {
-	fill: var(--color-text-muted) !important;
-}
 .u-values .u-value {
 	font-size: 0.7rem !important;
+}
+
+/* Hide scrollbar but keep scrollable */
+.no-scrollbar::-webkit-scrollbar {
+	display: none;
+}
+.no-scrollbar {
+	-ms-overflow-style: none;
+	scrollbar-width: none;
 }

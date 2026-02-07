@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
+	import { resolvedTheme } from '$lib/stores/theme';
 
 	interface Series {
 		label: string;
@@ -16,20 +17,43 @@
 		yMin?: number;
 		yMax?: number;
 		yLabel?: string;
+		syncKey?: string;
 	}
 
-	let { timestamps, series, height = 200, yMin = 0, yMax, yLabel = '' }: Props = $props();
+	let { timestamps, series, height = 200, yMin = 0, yMax, yLabel = '', syncKey }: Props = $props();
 
 	let container: HTMLDivElement;
 	let chart: uPlot | null = null;
+	let currentTheme: 'dark' | 'light' = 'dark';
+
+	// Shared sync instances for crosshair synchronization
+	const syncInstances = new Map<string, uPlot.SyncPubSub>();
+	function getSync(key: string): uPlot.SyncPubSub {
+		if (!syncInstances.has(key)) {
+			syncInstances.set(key, uPlot.sync(key));
+		}
+		return syncInstances.get(key)!;
+	}
+
+	function themeColors() {
+		const light = currentTheme === 'light';
+		return {
+			axis: light ? '#94a3b8' : '#64748b',
+			grid: light ? '#f1f5f9' : '#1e293b',
+			tick: light ? '#e2e8f0' : '#334155',
+		};
+	}
 
 	function buildOpts(): uPlot.Options {
 		const width = container?.clientWidth || 600;
-		return {
+		const tc = themeColors();
+
+		const opts: uPlot.Options = {
 			width,
 			height,
 			cursor: {
-				drag: { x: true, y: false, setScale: true }
+				drag: { x: true, y: false, setScale: true },
+				sync: syncKey ? { key: syncKey, setSeries: true } : undefined,
 			},
 			scales: {
 				x: { time: true },
@@ -40,31 +64,35 @@
 			},
 			axes: [
 				{
-					stroke: '#64748b',
-					grid: { stroke: '#1e293b', width: 1 },
-					ticks: { stroke: '#334155', width: 1 },
+					stroke: tc.axis,
+					grid: { stroke: tc.grid, width: 1 },
+					ticks: { stroke: tc.tick, width: 1 },
 					font: '10px system-ui',
 				},
 				{
-					stroke: '#64748b',
-					grid: { stroke: '#1e293b', width: 1 },
-					ticks: { stroke: '#334155', width: 1 },
+					stroke: tc.axis,
+					grid: { stroke: tc.grid, width: 1 },
+					ticks: { stroke: tc.tick, width: 1 },
 					font: '10px system-ui',
 					label: yLabel,
 					labelFont: '10px system-ui',
+					labelSize: 12,
 					size: 50,
 				}
 			],
 			series: [
-				{}, // x-axis (timestamps)
+				{},
 				...series.map((s) => ({
 					label: s.label,
 					stroke: s.color,
 					width: 1.5,
 					fill: s.color + '20',
+					points: { show: false },
 				}))
 			]
 		};
+
+		return opts;
 	}
 
 	function buildData(): uPlot.AlignedData {
@@ -107,7 +135,6 @@
 
 	// React to data changes
 	$effect(() => {
-		// Touch reactive deps
 		timestamps;
 		series;
 
@@ -115,6 +142,14 @@
 			chart.setData(buildData());
 		} else if (!chart && timestamps.length >= 2 && container) {
 			createChart();
+		}
+	});
+
+	// React to theme changes — recreate chart
+	resolvedTheme.subscribe((theme) => {
+		if (theme !== currentTheme) {
+			currentTheme = theme;
+			if (chart) createChart();
 		}
 	});
 </script>
