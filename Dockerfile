@@ -13,13 +13,18 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui-builder /app/ui/build ./ui/build
-RUN go build -o cudascope ./cmd/cudascope/
+RUN go build -ldflags="-s -w" -o cudascope ./cmd/cudascope/
 
-# Stage 3: Runtime (minimal CUDA base with NVML)
-FROM nvidia/cuda:12.8.0-base-ubuntu24.04
+# Stage 3: Runtime
+# No CUDA base needed — NVIDIA Container Toolkit mounts libnvidia-ml.so from the host.
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
+
+# Tell NVIDIA Container Toolkit to mount the driver libraries
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=utility
 
 COPY --from=go-builder /app/cudascope /usr/local/bin/cudascope
 

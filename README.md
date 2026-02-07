@@ -14,6 +14,10 @@ Then open [http://localhost:9090](http://localhost:9090).
 - **Zero dependencies** - no Prometheus, no Grafana, no InfluxDB
 - **Multi-node** - Docker Swarm support with agent/hub architecture
 
+## Prerequisites
+
+Docker with GPU access requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed on the host.
+
 ## Quick Start
 
 ### Standalone (single host)
@@ -182,7 +186,7 @@ Swarm:       Agent (per node)  --HTTP POST-->  Hub  -> SQLite -> HTTP/WS -> Brow
 | Frontend | Svelte 5, SvelteKit, adapter-static |
 | Charts | uPlot |
 | Styling | Tailwind CSS v4 |
-| Runtime | nvidia/cuda:12.8.0-base-ubuntu24.04 |
+| Runtime | debian:bookworm-slim + NVIDIA Container Toolkit |
 
 ## Building from Source
 
