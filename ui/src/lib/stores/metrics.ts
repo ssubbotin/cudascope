@@ -164,6 +164,20 @@ export async function fetchStatus() {
 	}
 }
 
+// Parse a range string like "5m", "1h", "24h", "7d", "30d" into seconds
+export function parseRangeSeconds(range: string): number {
+	const match = range.match(/^(\d+)([smhd])$/);
+	if (!match) return 300;
+	const val = parseInt(match[1]);
+	switch (match[2]) {
+		case 's': return val;
+		case 'm': return val * 60;
+		case 'h': return val * 3600;
+		case 'd': return val * 86400;
+		default: return 300;
+	}
+}
+
 // Fetch historical GPU metrics
 export async function fetchGPUHistory(gpuId: number, range: string, nodeId?: string): Promise<GPUMetrics[]> {
 	try {

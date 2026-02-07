@@ -18,9 +18,11 @@
 		yMax?: number;
 		yLabel?: string;
 		syncKey?: string;
+		xMin?: number;
+		xMax?: number;
 	}
 
-	let { timestamps, series, height = 200, yMin = 0, yMax, yLabel = '', syncKey }: Props = $props();
+	let { timestamps, series, height = 200, yMin = 0, yMax, yLabel = '', syncKey, xMin, xMax }: Props = $props();
 
 	let container: HTMLDivElement;
 	let chart: uPlot | null = null;
@@ -56,7 +58,10 @@
 				sync: syncKey ? { key: syncKey, setSeries: true } : undefined,
 			},
 			scales: {
-				x: { time: true },
+				x: {
+					time: true,
+					range: xMin != null && xMax != null ? [xMin, xMax] : undefined,
+				},
 				y: {
 					auto: yMax === undefined,
 					range: yMax !== undefined ? [yMin, yMax] : undefined

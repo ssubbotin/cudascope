@@ -6,7 +6,7 @@
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import NodeSelector from '$lib/components/NodeSelector.svelte';
-	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory } from '$lib/stores/metrics';
+	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory, parseRangeSeconds } from '$lib/stores/metrics';
 	import type { GPUMetrics, HostMetrics } from '$lib/stores/metrics';
 
 	const GPU_COLORS = ['#38bdf8', '#4ade80', '#fbbf24', '#f87171', '#a78bfa', '#fb923c', '#2dd4bf', '#e879f9'];
@@ -14,6 +14,10 @@
 	let selectedRange = $state('5m');
 	let autoRefresh = $state(true);
 	let loading = $state(false);
+
+	// Time range bounds for chart X axis
+	let xMax = $state(Math.floor(Date.now() / 1000));
+	let xMin = $derived(xMax - parseRangeSeconds(selectedRange));
 
 	// Per-GPU history data keyed by gpu_id
 	let allGPUHistory = $state<Map<number, GPUMetrics[]>>(new Map());
@@ -48,9 +52,10 @@
 
 	let gpuMap = $derived(new Map(filteredGPU.map((g) => [gpuKey(g.node_id, g.gpu_id), g])));
 
-	async function loadHistory(range: string) {
+	async function loadHistory(range: string, silent = false) {
 		selectedRange = range;
-		loading = true;
+		if (!silent) loading = true;
+		xMax = Math.floor(Date.now() / 1000);
 
 		const nodeFilter = $selectedNode === 'all' ? undefined : $selectedNode;
 
@@ -117,7 +122,7 @@
 	function setupRefresh() {
 		clearInterval(refreshInterval);
 		if (autoRefresh) {
-			refreshInterval = setInterval(() => loadHistory(selectedRange), 10000);
+			refreshInterval = setInterval(() => loadHistory(selectedRange, true), 10000);
 		}
 	}
 
@@ -198,6 +203,8 @@
 				yMax={100}
 				yLabel="%"
 				syncKey="dashboard"
+				{xMin}
+				{xMax}
 			/>
 		{:else if loading}
 			<div class="flex items-center justify-center h-[200px] text-text-muted text-sm">Loading...</div>
@@ -217,6 +224,8 @@
 				yMax={maxMem || undefined}
 				yLabel="MiB"
 				syncKey="dashboard"
+				{xMin}
+				{xMax}
 			/>
 		{:else}
 			<div class="h-[200px]"></div>
@@ -228,11 +237,11 @@
 		<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
 			<section class="bg-bg-card border border-border rounded-xl p-5">
 				<h4 class="text-xs font-medium text-text-muted mb-3">Host CPU (%)</h4>
-				<TimeSeriesChart timestamps={hostTs} series={cpuSeries} yMin={0} yMax={100} yLabel="%" syncKey="dashboard" />
+				<TimeSeriesChart timestamps={hostTs} series={cpuSeries} yMin={0} yMax={100} yLabel="%" syncKey="dashboard" {xMin} {xMax} />
 			</section>
 			<section class="bg-bg-card border border-border rounded-xl p-5">
 				<h4 class="text-xs font-medium text-text-muted mb-3">Host RAM (GiB)</h4>
-				<TimeSeriesChart timestamps={hostTs} series={hostMemSeries} yMin={0} yMax={hostMemTotal} yLabel="GiB" syncKey="dashboard" />
+				<TimeSeriesChart timestamps={hostTs} series={hostMemSeries} yMin={0} yMax={hostMemTotal} yLabel="GiB" syncKey="dashboard" {xMin} {xMax} />
 			</section>
 		</div>
 	{/if}

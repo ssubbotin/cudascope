@@ -4,7 +4,7 @@
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import ProcessList from '$lib/components/ProcessList.svelte';
-	import { devices, latestGPU, processes, fetchGPUHistory, gpuKey } from '$lib/stores/metrics';
+	import { devices, latestGPU, processes, fetchGPUHistory, gpuKey, parseRangeSeconds } from '$lib/stores/metrics';
 	import type { GPUMetrics } from '$lib/stores/metrics';
 	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor } from '$lib/utils/format';
 
@@ -19,9 +19,14 @@
 	let historyData = $state<GPUMetrics[]>([]);
 	let loading = $state(false);
 
-	async function loadHistory(range: string) {
+	// Time range bounds for chart X axis
+	let xMax = $state(Math.floor(Date.now() / 1000));
+	let xMin = $derived(xMax - parseRangeSeconds(selectedRange));
+
+	async function loadHistory(range: string, silent = false) {
 		selectedRange = range;
-		loading = true;
+		if (!silent) loading = true;
+		xMax = Math.floor(Date.now() / 1000);
 		historyData = await fetchGPUHistory(gpuId, range, nodeId);
 		loading = false;
 	}
@@ -68,7 +73,7 @@
 	function setupRefresh() {
 		clearInterval(refreshInterval);
 		if (autoRefresh) {
-			refreshInterval = setInterval(() => loadHistory(selectedRange), 10000);
+			refreshInterval = setInterval(() => loadHistory(selectedRange, true), 10000);
 		}
 	}
 
@@ -158,37 +163,37 @@
 		<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
 			<div class="bg-bg-card border border-border rounded-xl p-5">
 				<h3 class="text-xs font-medium text-text-muted mb-3">Utilization (%)</h3>
-				<TimeSeriesChart timestamps={ts} series={utilSeries} yMin={0} yMax={100} yLabel="%" syncKey={SYNC} />
+				<TimeSeriesChart timestamps={ts} series={utilSeries} yMin={0} yMax={100} yLabel="%" syncKey={SYNC} {xMin} {xMax} />
 			</div>
 
 			<div class="bg-bg-card border border-border rounded-xl p-5">
 				<h3 class="text-xs font-medium text-text-muted mb-3">Memory (MiB)</h3>
-				<TimeSeriesChart timestamps={ts} series={memSeries} yMin={0} yMax={device?.mem_total} yLabel="MiB" syncKey={SYNC} />
+				<TimeSeriesChart timestamps={ts} series={memSeries} yMin={0} yMax={device?.mem_total} yLabel="MiB" syncKey={SYNC} {xMin} {xMax} />
 			</div>
 
 			<div class="bg-bg-card border border-border rounded-xl p-5">
 				<h3 class="text-xs font-medium text-text-muted mb-3">Temperature & Fan</h3>
-				<TimeSeriesChart timestamps={ts} series={tempSeries} yMin={0} syncKey={SYNC} />
+				<TimeSeriesChart timestamps={ts} series={tempSeries} yMin={0} syncKey={SYNC} {xMin} {xMax} />
 			</div>
 
 			<div class="bg-bg-card border border-border rounded-xl p-5">
 				<h3 class="text-xs font-medium text-text-muted mb-3">Power (W)</h3>
-				<TimeSeriesChart timestamps={ts} series={powerSeries} yMin={0} yMax={metrics?.power_limit || undefined} yLabel="W" syncKey={SYNC} />
+				<TimeSeriesChart timestamps={ts} series={powerSeries} yMin={0} yMax={metrics?.power_limit || undefined} yLabel="W" syncKey={SYNC} {xMin} {xMax} />
 			</div>
 
 			<div class="bg-bg-card border border-border rounded-xl p-5">
 				<h3 class="text-xs font-medium text-text-muted mb-3">Clock Speeds (MHz)</h3>
-				<TimeSeriesChart timestamps={ts} series={clockSeries} yMin={0} yLabel="MHz" syncKey={SYNC} />
+				<TimeSeriesChart timestamps={ts} series={clockSeries} yMin={0} yLabel="MHz" syncKey={SYNC} {xMin} {xMax} />
 			</div>
 
 			<div class="bg-bg-card border border-border rounded-xl p-5">
 				<h3 class="text-xs font-medium text-text-muted mb-3">PCIe Throughput (KB/s)</h3>
-				<TimeSeriesChart timestamps={ts} series={pcieSeries} yMin={0} yLabel="KB/s" syncKey={SYNC} />
+				<TimeSeriesChart timestamps={ts} series={pcieSeries} yMin={0} yLabel="KB/s" syncKey={SYNC} {xMin} {xMax} />
 			</div>
 
 			<div class="bg-bg-card border border-border rounded-xl p-5 lg:col-span-2">
 				<h3 class="text-xs font-medium text-text-muted mb-3">Encoder / Decoder Utilization (%)</h3>
-				<TimeSeriesChart timestamps={ts} series={encDecSeries} yMin={0} yMax={100} yLabel="%" syncKey={SYNC} />
+				<TimeSeriesChart timestamps={ts} series={encDecSeries} yMin={0} yMax={100} yLabel="%" syncKey={SYNC} {xMin} {xMax} />
 			</div>
 		</div>
 	{:else if loading}
