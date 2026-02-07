@@ -1,0 +1,21 @@
+services:
+  cudascope:
+    image: cudascope/cudascope:latest
+    build: .
+    ports:
+      - "9090:9090"
+    volumes:
+      - cudascope-data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    environment:
+      - CUDASCOPE_DATA_DIR=/data
+
+volumes:
+  cudascope-data:

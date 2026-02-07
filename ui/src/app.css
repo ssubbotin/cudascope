@@ -1,0 +1,52 @@
+@import 'tailwindcss';
+
+@theme {
+	--color-bg-primary: #0f172a;
+	--color-bg-secondary: #1e293b;
+	--color-bg-card: #1e293b;
+	--color-bg-card-hover: #334155;
+	--color-border: #334155;
+	--color-text-primary: #f1f5f9;
+	--color-text-secondary: #94a3b8;
+	--color-text-muted: #64748b;
+	--color-accent: #38bdf8;
+	--color-accent-hover: #7dd3fc;
+	--color-green: #4ade80;
+	--color-yellow: #fbbf24;
+	--color-red: #f87171;
+	--color-orange: #fb923c;
+}
+
+:root {
+	color-scheme: dark;
+}
+
+body {
+	background-color: var(--color-bg-primary);
+	color: var(--color-text-primary);
+	font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* uPlot overrides for dark theme */
+.u-wrap {
+	background: transparent !important;
+}
+.u-legend {
+	color: var(--color-text-secondary) !important;
+	font-size: 0.75rem !important;
+}
+.u-legend .u-series td {
+	padding: 1px 4px !important;
+}
+.u-axis {
+	stroke: var(--color-border) !important;
+}
+.u-axis .u-ticks {
+	stroke: var(--color-border) !important;
+}
+.u-axis .u-label {
+	fill: var(--color-text-muted) !important;
+}
+.u-values .u-value {
+	font-size: 0.7rem !important;
+}
