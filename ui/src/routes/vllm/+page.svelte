@@ -170,12 +170,12 @@
 		<div class="text-center text-text-muted py-8">Loading history...</div>
 	{:else if historyData.length > 0}
 		<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-			<TimeSeriesChart title="Token Throughput (tok/s)" {ts} series={throughputSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart title="Active Requests" {ts} series={requestsSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart title="KV Cache Usage (%)" {ts} series={kvCacheSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart title="Latency (ms)" {ts} series={latencySeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart title="Total Tokens" {ts} series={tokensSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart title="Prefix Cache Hit Rate (%)" {ts} series={cacheSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			<TimeSeriesChart timestamps={ts} series={throughputSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			<TimeSeriesChart timestamps={ts} series={requestsSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			<TimeSeriesChart timestamps={ts} series={kvCacheSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			<TimeSeriesChart timestamps={ts} series={latencySeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			<TimeSeriesChart timestamps={ts} series={tokensSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			<TimeSeriesChart timestamps={ts} series={cacheSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
 		</div>
 	{:else}
 		<div class="text-center text-text-muted py-8">No data for selected time range</div>
