@@ -9,6 +9,7 @@ docker run -d --gpus all -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascop
 Then open [http://localhost:9090](http://localhost:9090).
 
 - **Direct NVML access** via [go-nvml](https://github.com/NVIDIA/go-nvml) - no nvidia-smi parsing
+- **vLLM integration** - scrapes vLLM `/metrics` for tok/s, KV cache, latency, active model
 - **Embedded storage** - SQLite with automatic rollup retention (raw 1s -> 1m -> 1h)
 - **Single binary** - Go backend with embedded Svelte 5 SPA (go:embed)
 - **Zero dependencies** - no Prometheus, no Grafana, no InfluxDB
@@ -65,11 +66,13 @@ All settings via environment variables or CLI flags:
 | `CUDASCOPE_RETENTION_1M` | `--retention-1m` | `720h` | 1-minute rollup retention (30d) |
 | `CUDASCOPE_RETENTION_1H` | `--retention-1h` | `8760h` | 1-hour rollup retention (365d) |
 | `CUDASCOPE_AUTH` | `--auth` | - | Basic auth `user:password` |
+| `CUDASCOPE_VLLM_URL` | `--vllm-url` | - | vLLM endpoint URL (e.g. `http://localhost:8000`) |
+| `CUDASCOPE_VLLM_INTERVAL` | `--vllm-interval` | `5s` | vLLM metrics scrape interval |
 | `CUDASCOPE_ALERT_TEMP` | `--alert-temp` | `0` | Temperature alert threshold (C) |
 | `CUDASCOPE_ALERT_GPU_UTIL` | `--alert-gpu-util` | `0` | GPU utilization alert (%) |
 | `CUDASCOPE_ALERT_MEM_UTIL` | `--alert-mem-util` | `0` | Memory utilization alert (%) |
 
-Alert thresholds of `0` mean disabled.
+Alert thresholds of `0` mean disabled. vLLM URL empty means disabled.
 
 ## Features
 
@@ -77,6 +80,7 @@ Alert thresholds of `0` mean disabled.
 
 - Per-GPU cards with real-time utilization, VRAM, temperature, fan, power, sparklines
 - Host card with CPU, RAM, disk, network
+- **vLLM card** with token throughput (tok/s), active/waiting requests, KV cache usage, latency, model name
 - Multi-GPU overlay charts (utilization, memory)
 - Host CPU and RAM history charts
 - GPU process list with VRAM usage
@@ -112,6 +116,28 @@ Set thresholds via config. When exceeded:
 - Alert count badge in navbar
 - Red border and warning icon on affected GPU cards
 - Alert details via `/api/v1/alerts`
+
+### vLLM Integration
+
+Monitor [vLLM](https://github.com/vllm-project/vllm) inference servers alongside GPU metrics:
+
+```bash
+docker run -d --gpus all -p 9090:9090 \
+  -e CUDASCOPE_VLLM_URL=http://localhost:8000 \
+  -v cudascope-data:/data ssubbotin/cudascope
+```
+
+The dashboard shows:
+- **Token throughput** (tok/s) with sparkline history
+- **Active/waiting requests** count
+- **KV cache usage** percentage
+- **Time to first token** (TTFT) and **per-token latency** (TPOT)
+- **Prefix cache hit rate**
+- **Served model name**
+
+API endpoints:
+- `GET /api/v1/vllm/status` — latest vLLM snapshot
+- `GET /api/v1/vllm/metrics?range=5m` — historical vLLM metrics
 
 ### Prometheus
 
@@ -153,6 +179,8 @@ Preset ranges: 5m, 15m, 1h, 6h, 24h. Auto-refresh toggle and manual refresh butt
 | `/api/v1/gpus/:id/metrics?range=5m` | GET | Historical GPU metrics |
 | `/api/v1/gpus/:id/processes` | GET | Current GPU processes |
 | `/api/v1/host/metrics?range=5m` | GET | Historical host metrics |
+| `/api/v1/vllm/status` | GET | Latest vLLM snapshot |
+| `/api/v1/vllm/metrics?range=5m` | GET | Historical vLLM metrics |
 | `/api/v1/alerts` | GET | Active alerts and config |
 | `/api/v1/ws` | WS | Real-time metric stream |
 | `/api/v1/healthz` | GET | Health check |
