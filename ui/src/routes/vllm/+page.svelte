@@ -67,6 +67,7 @@
 	}
 
 	let refreshInterval: ReturnType<typeof setInterval>;
+	let initialized = $state(false);
 
 	function setupRefresh() {
 		clearInterval(refreshInterval);
@@ -76,8 +77,11 @@
 	}
 
 	$effect(() => {
-		loadHistory(selectedRange);
-		setupRefresh();
+		if (!initialized) {
+			initialized = true;
+			loadHistory(selectedRange);
+			setupRefresh();
+		}
 	});
 
 	onDestroy(() => {
