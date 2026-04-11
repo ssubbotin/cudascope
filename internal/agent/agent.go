@@ -81,6 +81,15 @@ func (a *Agent) WriteGPUProcesses(procs []collector.GPUProcess) error {
 	return a.post("/api/v1/ingest/gpu-processes", procs)
 }
 
+// WriteVLLMMetrics implements collector.MetricSink.
+func (a *Agent) WriteVLLMMetrics(m *collector.VLLMMetrics) error {
+	if m == nil {
+		return nil
+	}
+	m.NodeID = a.nodeID
+	return a.post("/api/v1/ingest/vllm-metrics", m)
+}
+
 func (a *Agent) post(path string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {

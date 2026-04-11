@@ -23,6 +23,8 @@ type Config struct {
 	AlertTempMax    int    // temperature alert threshold (°C, 0 = disabled)
 	AlertGPUUtil    int    // GPU utilization alert threshold (%, 0 = disabled)
 	AlertMemUtil    int    // memory utilization alert threshold (%, 0 = disabled)
+	VLLMUrl         string // vLLM metrics endpoint base URL (empty = disabled)
+	VLLMInterval    time.Duration
 }
 
 func Load() *Config {
@@ -44,6 +46,8 @@ func Load() *Config {
 	flag.IntVar(&cfg.AlertTempMax, "alert-temp", envOrDefaultInt("CUDASCOPE_ALERT_TEMP", 0), "temperature alert threshold °C (0=disabled)")
 	flag.IntVar(&cfg.AlertGPUUtil, "alert-gpu-util", envOrDefaultInt("CUDASCOPE_ALERT_GPU_UTIL", 0), "GPU utilization alert threshold % (0=disabled)")
 	flag.IntVar(&cfg.AlertMemUtil, "alert-mem-util", envOrDefaultInt("CUDASCOPE_ALERT_MEM_UTIL", 0), "memory utilization alert threshold % (0=disabled)")
+	flag.StringVar(&cfg.VLLMUrl, "vllm-url", envOrDefault("CUDASCOPE_VLLM_URL", ""), "vLLM metrics endpoint base URL (empty=disabled)")
+	flag.DurationVar(&cfg.VLLMInterval, "vllm-interval", envOrDefaultDuration("CUDASCOPE_VLLM_INTERVAL", 5*time.Second), "vLLM metrics collection interval")
 
 	flag.Parse()
 	return cfg

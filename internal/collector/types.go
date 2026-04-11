@@ -57,6 +57,23 @@ type HostMetrics struct {
 	Load15m    float64 `json:"load_15m"`
 }
 
+// VLLMMetrics holds a snapshot of vLLM inference server metrics.
+type VLLMMetrics struct {
+	NodeID              string  `json:"node_id,omitempty"`
+	Timestamp           int64   `json:"ts"`
+	ModelName           string  `json:"model_name"`
+	RequestsRunning     int     `json:"requests_running"`
+	RequestsWaiting     int     `json:"requests_waiting"`
+	KVCacheUsage        float64 `json:"kv_cache_usage"`          // 0-1
+	GenerationTokensTotal int64 `json:"generation_tokens_total"`
+	PromptTokensTotal   int64   `json:"prompt_tokens_total"`
+	TimeToFirstTokenAvg float64 `json:"ttft_avg"`                // seconds
+	TimePerOutputTokenAvg float64 `json:"tpot_avg"`              // seconds
+	TokenThroughput     float64 `json:"token_throughput"`        // tok/s
+	PrefixCacheHitRate  float64 `json:"prefix_cache_hit_rate"`   // 0-1
+	NumPreemptions      int64   `json:"num_preemptions"`
+}
+
 // Snapshot is a complete point-in-time reading pushed via WebSocket.
 type Snapshot struct {
 	Type      string       `json:"type"`
@@ -65,6 +82,7 @@ type Snapshot struct {
 	GPUs      []GPUMetrics `json:"gpus,omitempty"`
 	Host      *HostMetrics `json:"host,omitempty"`
 	Processes []GPUProcess `json:"processes,omitempty"`
+	VLLM      *VLLMMetrics `json:"vllm,omitempty"`
 }
 
 // Node represents a registered agent node.

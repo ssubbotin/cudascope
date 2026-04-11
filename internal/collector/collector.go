@@ -11,6 +11,7 @@ type MetricSink interface {
 	WriteGPUMetrics(metrics []GPUMetrics) error
 	WriteHostMetrics(m *HostMetrics) error
 	WriteGPUProcesses(procs []GPUProcess) error
+	WriteVLLMMetrics(m *VLLMMetrics) error
 }
 
 // BroadcastSink receives snapshots for real-time push.
@@ -22,11 +23,13 @@ type BroadcastSink interface {
 type Collector struct {
 	gpu       *GPUCollector
 	host      *HostCollector
+	vllm      *VLLMCollector
 	storage   MetricSink
 	broadcast BroadcastSink
 
 	gpuInterval  time.Duration
 	hostInterval time.Duration
+	vllmInterval time.Duration
 }
 
 // New creates a new Collector.
@@ -41,12 +44,30 @@ func New(gpu *GPUCollector, host *HostCollector, storage MetricSink, broadcast B
 	}
 }
 
+// SetVLLM configures vLLM metrics collection.
+func (c *Collector) SetVLLM(vllm *VLLMCollector, interval time.Duration) {
+	c.vllm = vllm
+	c.vllmInterval = interval
+}
+
 // Run starts collection loops. Blocks until ctx is cancelled.
 func (c *Collector) Run(ctx context.Context) {
 	gpuTicker := time.NewTicker(c.gpuInterval)
 	hostTicker := time.NewTicker(c.hostInterval)
 	defer gpuTicker.Stop()
 	defer hostTicker.Stop()
+
+	var vllmTicker *time.Ticker
+	var vllmCh <-chan time.Time
+	if c.vllm != nil {
+		interval := c.vllmInterval
+		if interval == 0 {
+			interval = 5 * time.Second
+		}
+		vllmTicker = time.NewTicker(interval)
+		vllmCh = vllmTicker.C
+		defer vllmTicker.Stop()
+	}
 
 	for {
 		select {
@@ -58,6 +79,9 @@ func (c *Collector) Run(ctx context.Context) {
 
 		case <-hostTicker.C:
 			c.collectHost()
+
+		case <-vllmCh:
+			c.collectVLLM()
 		}
 	}
 }
@@ -109,6 +133,26 @@ func (c *Collector) collectHost() {
 			Type:      "host_metrics",
 			Timestamp: time.Now().Unix(),
 			Host:      m,
+		})
+	}
+}
+
+func (c *Collector) collectVLLM() {
+	m, err := c.vllm.Collect()
+	if err != nil {
+		log.Printf("error collecting vLLM metrics: %v", err)
+		return
+	}
+
+	if err := c.storage.WriteVLLMMetrics(m); err != nil {
+		log.Printf("error writing vLLM metrics: %v", err)
+	}
+
+	if c.broadcast != nil {
+		c.broadcast.Broadcast(Snapshot{
+			Type:      "vllm_metrics",
+			Timestamp: time.Now().Unix(),
+			VLLM:      m,
 		})
 	}
 }

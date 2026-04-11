@@ -276,6 +276,80 @@ func (db *DB) GetLatestHostMetrics() ([]collector.HostMetrics, error) {
 	return metrics, rows.Err()
 }
 
+// ReadVLLMMetrics returns vLLM metrics for a time range, optionally filtered by node.
+func (db *DB) ReadVLLMMetrics(nodeID string, from, to int64) ([]collector.VLLMMetrics, error) {
+	var query string
+	var args []any
+	if nodeID != "" {
+		query = `SELECT ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
+			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
+			token_throughput, prefix_cache_hit_rate, num_preemptions
+			FROM vllm_metrics_raw WHERE node_id = ? AND ts >= ? AND ts <= ? ORDER BY ts`
+		args = []any{nodeID, from, to}
+	} else {
+		query = `SELECT ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
+			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
+			token_throughput, prefix_cache_hit_rate, num_preemptions
+			FROM vllm_metrics_raw WHERE ts >= ? AND ts <= ? ORDER BY ts`
+		args = []any{from, to}
+	}
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var metrics []collector.VLLMMetrics
+	for rows.Next() {
+		var m collector.VLLMMetrics
+		err := rows.Scan(&m.Timestamp, &m.NodeID, &m.ModelName, &m.RequestsRunning,
+			&m.RequestsWaiting, &m.KVCacheUsage, &m.GenerationTokensTotal,
+			&m.PromptTokensTotal, &m.TimeToFirstTokenAvg, &m.TimePerOutputTokenAvg,
+			&m.TokenThroughput, &m.PrefixCacheHitRate, &m.NumPreemptions)
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, m)
+	}
+	return metrics, rows.Err()
+}
+
+// ReadLatestVLLMMetrics returns the most recent vLLM metrics for a node.
+func (db *DB) ReadLatestVLLMMetrics(nodeID string) (*collector.VLLMMetrics, error) {
+	cutoff := time.Now().Unix() - 30
+
+	var query string
+	var args []any
+	if nodeID != "" {
+		query = `SELECT ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
+			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
+			token_throughput, prefix_cache_hit_rate, num_preemptions
+			FROM vllm_metrics_raw WHERE node_id = ? AND ts >= ? ORDER BY ts DESC LIMIT 1`
+		args = []any{nodeID, cutoff}
+	} else {
+		query = `SELECT ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
+			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
+			token_throughput, prefix_cache_hit_rate, num_preemptions
+			FROM vllm_metrics_raw WHERE ts >= ? ORDER BY ts DESC LIMIT 1`
+		args = []any{cutoff}
+	}
+
+	var m collector.VLLMMetrics
+	err := db.conn.QueryRow(query, args...).Scan(
+		&m.Timestamp, &m.NodeID, &m.ModelName, &m.RequestsRunning,
+		&m.RequestsWaiting, &m.KVCacheUsage, &m.GenerationTokensTotal,
+		&m.PromptTokensTotal, &m.TimeToFirstTokenAvg, &m.TimePerOutputTokenAvg,
+		&m.TokenThroughput, &m.PrefixCacheHitRate, &m.NumPreemptions)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 // GetAllGPUProcesses returns the latest process snapshot across all GPUs and nodes.
 func (db *DB) GetAllGPUProcesses() ([]collector.GPUProcess, error) {
 	cutoff := time.Now().Unix() - 30
