@@ -27,7 +27,7 @@
 	let throughputData = $derived(history.map(m => m.token_throughput));
 </script>
 
-<a href="/vllm" class="block bg-bg-card border border-border rounded-xl p-5 hover:border-accent transition-colors cursor-pointer">
+<a href="/vllm" class="block bg-bg-card border border-border rounded-xl p-5 hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 cursor-pointer">
 	<div class="flex items-center gap-2 mb-4">
 		<svg class="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 			<path d="M12 2L2 7l10 5 10-5-10-5z"/>
