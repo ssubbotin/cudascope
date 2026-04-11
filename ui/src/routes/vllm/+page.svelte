@@ -170,12 +170,35 @@
 		<div class="text-center text-text-muted py-8">Loading history...</div>
 	{:else if historyData.length > 0}
 		<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-			<TimeSeriesChart timestamps={ts} series={throughputSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart timestamps={ts} series={requestsSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart timestamps={ts} series={kvCacheSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart timestamps={ts} series={latencySeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart timestamps={ts} series={tokensSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
-			<TimeSeriesChart timestamps={ts} series={cacheSeries} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			<div class="bg-bg-card border border-border rounded-xl p-5">
+				<h3 class="text-xs font-medium text-text-muted mb-3">Token Throughput (tok/s)</h3>
+				<TimeSeriesChart timestamps={ts} series={throughputSeries} yMin={0} yLabel="tok/s" xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			</div>
+
+			<div class="bg-bg-card border border-border rounded-xl p-5">
+				<h3 class="text-xs font-medium text-text-muted mb-3">Active Requests</h3>
+				<TimeSeriesChart timestamps={ts} series={requestsSeries} yMin={0} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			</div>
+
+			<div class="bg-bg-card border border-border rounded-xl p-5">
+				<h3 class="text-xs font-medium text-text-muted mb-3">KV Cache Usage (%)</h3>
+				<TimeSeriesChart timestamps={ts} series={kvCacheSeries} yMin={0} yMax={100} yLabel="%" xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			</div>
+
+			<div class="bg-bg-card border border-border rounded-xl p-5">
+				<h3 class="text-xs font-medium text-text-muted mb-3">Latency (ms)</h3>
+				<TimeSeriesChart timestamps={ts} series={latencySeries} yMin={0} yLabel="ms" xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			</div>
+
+			<div class="bg-bg-card border border-border rounded-xl p-5">
+				<h3 class="text-xs font-medium text-text-muted mb-3">Total Tokens</h3>
+				<TimeSeriesChart timestamps={ts} series={tokensSeries} yMin={0} xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			</div>
+
+			<div class="bg-bg-card border border-border rounded-xl p-5">
+				<h3 class="text-xs font-medium text-text-muted mb-3">Prefix Cache Hit Rate (%)</h3>
+				<TimeSeriesChart timestamps={ts} series={cacheSeries} yMin={0} yMax={100} yLabel="%" xMin={xMin} xMax={xMax} syncKey={SYNC} />
+			</div>
 		</div>
 	{:else}
 		<div class="text-center text-text-muted py-8">No data for selected time range</div>
