@@ -77,6 +77,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/gpus", s.handleGPUs)
 	s.mux.HandleFunc("/api/v1/gpus/", s.handleGPURoute)
 	s.mux.HandleFunc("/api/v1/host/metrics", s.handleHostMetrics)
+	s.mux.HandleFunc("/api/v1/vllm/metrics", s.handleVLLMMetrics)
+	s.mux.HandleFunc("/api/v1/vllm/status", s.handleVLLMStatus)
 	s.mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
 	s.mux.HandleFunc("/api/v1/ws", s.hub.HandleWS)
 	s.mux.HandleFunc("/api/v1/healthz", s.handleHealthz)
@@ -87,6 +89,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/ingest/gpu-metrics", s.handleIngestGPUMetrics)
 	s.mux.HandleFunc("/api/v1/ingest/host-metrics", s.handleIngestHostMetrics)
 	s.mux.HandleFunc("/api/v1/ingest/gpu-processes", s.handleIngestGPUProcesses)
+	s.mux.HandleFunc("/api/v1/ingest/vllm-metrics", s.handleIngestVLLMMetrics)
 
 	// Serve UI
 	if s.devMode {
@@ -231,6 +234,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if alerts == nil {
 		resp["alerts"] = []struct{}{}
 	}
+
+	// Include latest vLLM metrics if available
+	vllm, err := s.store.ReadLatestVLLMMetrics(nodeFilter)
+	if err != nil {
+		log.Printf("get vllm metrics: %v", err)
+	}
+	if vllm != nil {
+		resp["vllm"] = vllm
+	}
+
 	writeJSON(w, resp)
 }
 
@@ -324,6 +337,39 @@ func (s *Server) handleHostMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, metrics)
+}
+
+// --- vLLM endpoints ---
+
+func (s *Server) handleVLLMMetrics(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	nodeID := r.URL.Query().Get("node")
+
+	metrics, err := s.store.ReadVLLMMetrics(nodeID, from, to)
+	if err != nil {
+		httpError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if metrics == nil {
+		writeJSON(w, []struct{}{})
+		return
+	}
+	writeJSON(w, metrics)
+}
+
+func (s *Server) handleVLLMStatus(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.URL.Query().Get("node")
+
+	m, err := s.store.ReadLatestVLLMMetrics(nodeID)
+	if err != nil {
+		httpError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if m == nil {
+		writeJSON(w, map[string]any{})
+		return
+	}
+	writeJSON(w, m)
 }
 
 // --- Ingest endpoints (agent -> hub) ---
@@ -456,6 +502,35 @@ func (s *Server) handleIngestGPUProcesses(w http.ResponseWriter, r *http.Request
 			Processes: procs,
 		})
 	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleIngestVLLMMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var m collector.VLLMMetrics
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		httpError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.WriteVLLMMetrics(&m); err != nil {
+		httpError(w, "write vllm metrics: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.store.UpdateNodeSeen(m.NodeID)
+
+	s.hub.Broadcast(collector.Snapshot{
+		Type:      "vllm_metrics",
+		NodeID:    m.NodeID,
+		Timestamp: time.Now().Unix(),
+		VLLM:      &m,
+	})
 
 	w.WriteHeader(http.StatusOK)
 }

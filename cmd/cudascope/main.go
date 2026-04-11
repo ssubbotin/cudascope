@@ -105,6 +105,14 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 
 	// Start collector
 	col := collector.New(gpuCol, hostCol, db, hub, cfg.CollectInterval, cfg.HostInterval)
+
+	// Optional vLLM collector
+	if cfg.VLLMUrl != "" {
+		vllmCol := collector.NewVLLMCollector(cfg.VLLMUrl, "local")
+		col.SetVLLM(vllmCol, cfg.VLLMInterval)
+		log.Printf("vLLM metrics collection enabled: %s (interval=%s)", cfg.VLLMUrl, cfg.VLLMInterval)
+	}
+
 	go col.Run(ctx)
 
 	// Start retention

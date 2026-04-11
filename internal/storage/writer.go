@@ -97,6 +97,24 @@ func (db *DB) WriteGPUProcesses(procs []collector.GPUProcess) error {
 	return tx.Commit()
 }
 
+// WriteVLLMMetrics inserts a vLLM metrics snapshot.
+func (db *DB) WriteVLLMMetrics(m *collector.VLLMMetrics) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.conn.Exec(`INSERT INTO vllm_metrics_raw
+		(ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
+		 generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
+		 token_throughput, prefix_cache_hit_rate, num_preemptions)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Timestamp, m.NodeID, m.ModelName, m.RequestsRunning, m.RequestsWaiting,
+		m.KVCacheUsage, m.GenerationTokensTotal, m.PromptTokensTotal,
+		m.TimeToFirstTokenAvg, m.TimePerOutputTokenAvg, m.TokenThroughput,
+		m.PrefixCacheHitRate, m.NumPreemptions,
+	)
+	return err
+}
+
 // RegisterGPUDevices upserts GPU device info for a given node.
 func (db *DB) RegisterGPUDevices(nodeID string, devices []collector.GPUDevice) error {
 	db.mu.Lock()
