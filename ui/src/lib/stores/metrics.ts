@@ -63,6 +63,22 @@ export interface Node {
 	online: boolean;
 }
 
+export interface VLLMMetrics {
+	ts: number;
+	node_id: string;
+	model_name: string;
+	requests_running: number;
+	requests_waiting: number;
+	kv_cache_usage: number;
+	generation_tokens_total: number;
+	prompt_tokens_total: number;
+	ttft_avg: number;
+	tpot_avg: number;
+	token_throughput: number;
+	prefix_cache_hit_rate: number;
+	num_preemptions: number;
+}
+
 export interface Alert {
 	node_id: string;
 	gpu_id: number;
@@ -84,6 +100,8 @@ export const latestGPU = writable<GPUMetrics[]>([]);
 export const latestHosts = writable<Map<string, HostMetrics>>(new Map());
 export const processes = writable<GPUProcess[]>([]);
 export const alerts = writable<Alert[]>([]);
+export const latestVLLM = writable<VLLMMetrics | null>(null);
+export const vllmHistory = writable<VLLMMetrics[]>([]);
 
 // Sparkline buffers: keep last 120 readings per GPU (keyed by "node:gpu_id")
 const SPARKLINE_SIZE = 120;
@@ -132,6 +150,15 @@ onMessage((data: any) => {
 		});
 	}
 
+	if (data.type === 'vllm_metrics' && data.vllm) {
+		latestVLLM.set(data.vllm);
+		vllmHistory.update((arr) => {
+			arr.push(data.vllm);
+			if (arr.length > SPARKLINE_SIZE) arr = arr.slice(-SPARKLINE_SIZE);
+			return [...arr];
+		});
+	}
+
 	if (data.type === 'gpu_processes' && data.processes) {
 		const nodeId = data.node_id || 'local';
 		processes.update((arr) => {
@@ -159,6 +186,7 @@ export async function fetchStatus() {
 		}
 		if (data.processes) processes.set(data.processes);
 		if (data.alerts) alerts.set(data.alerts);
+		if (data.vllm) latestVLLM.set(data.vllm);
 	} catch (e) {
 		console.error('Failed to fetch status:', e);
 	}
@@ -182,6 +210,18 @@ export function parseRangeSeconds(range: string): number {
 export async function fetchGPUHistory(gpuId: number, range: string, nodeId?: string): Promise<GPUMetrics[]> {
 	try {
 		let url = `/api/v1/gpus/${gpuId}/metrics?range=${range}`;
+		if (nodeId) url += `&node=${nodeId}`;
+		const res = await fetch(url);
+		return await res.json();
+	} catch {
+		return [];
+	}
+}
+
+// Fetch historical vLLM metrics
+export async function fetchVLLMHistory(range: string, nodeId?: string): Promise<VLLMMetrics[]> {
+	try {
+		let url = `/api/v1/vllm/metrics?range=${range}`;
 		if (nodeId) url += `&node=${nodeId}`;
 		const res = await fetch(url);
 		return await res.json();
