@@ -80,6 +80,12 @@ func (v *VLLMCollector) fetchModelName() {
 
 // Collect scrapes the vLLM /metrics endpoint and returns parsed metrics.
 func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
+	// Re-extract model name from each /metrics response: the upstream vLLM
+	// service may be restarted with a different model while cudascope is
+	// running, and we should reflect the current model, not the one that was
+	// live at cudascope startup.
+	v.modelName = ""
+
 	resp, err := v.client.Get(v.baseURL + "/metrics")
 	if err != nil {
 		return nil, fmt.Errorf("GET /metrics: %w", err)
@@ -95,6 +101,12 @@ func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
 		return nil, fmt.Errorf("parse metrics: %w", err)
 	}
 
+	// Fall back to /v1/models if no label was present in the /metrics output
+	// (rare, but can happen if no requests have been served since start).
+	if v.modelName == "" {
+		v.fetchModelName()
+	}
+
 	now := time.Now()
 	m := &VLLMMetrics{
 		NodeID:                v.nodeID,
@@ -106,11 +118,6 @@ func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
 		GenerationTokensTotal: int64(raw["vllm:generation_tokens_total"]),
 		PromptTokensTotal:     int64(raw["vllm:prompt_tokens_total"]),
 		NumPreemptions:        int64(raw["vllm:num_preemptions_total"]),
-	}
-
-	// Model name may have been extracted from metric labels during parsing
-	if m.ModelName == "" && v.modelName != "" {
-		m.ModelName = v.modelName
 	}
 
 	// Compute TTFT average (delta of sum / delta of count)
@@ -187,14 +194,13 @@ func (v *VLLMCollector) parsePrometheusMetrics(r io.Reader) (map[string]float64,
 
 		result[name] = value
 
-		// Try to extract model name from labels
-		if v.modelName == "" {
-			if idx := strings.Index(line, "model_name=\""); idx >= 0 {
-				start := idx + len("model_name=\"")
-				end := strings.Index(line[start:], "\"")
-				if end > 0 {
-					v.modelName = line[start : start+end]
-				}
+		// Extract model name from labels — update every time so a vLLM
+		// service swap (e.g. stop qwen-coder, start gemma) is reflected.
+		if idx := strings.Index(line, "model_name=\""); idx >= 0 {
+			start := idx + len("model_name=\"")
+			end := strings.Index(line[start:], "\"")
+			if end > 0 {
+				v.modelName = line[start : start+end]
 			}
 		}
 	}
