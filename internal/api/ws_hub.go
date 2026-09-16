@@ -5,26 +5,64 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sergey/cudascope/internal/collector"
+)
+
+const (
+	// wsWriteWait bounds a single frame write. Without a deadline a client
+	// that stops reading blocks the writer forever once the socket buffers
+	// fill up.
+	wsWriteWait = 5 * time.Second
+
+	// wsSendQueue is the per-client outbound queue depth. Snapshots are
+	// dropped once it is full, which keeps a slow client from holding up
+	// the collector.
+	wsSendQueue = 32
 )
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// wsClient is one connected dashboard. Every write to conn goes through the
+// client's own writePump goroutine: gorilla/websocket panics on concurrent
+// writes, and the collector broadcasts from several goroutines.
+type wsClient struct {
+	conn *websocket.Conn
+	send chan []byte
+
+	done     chan struct{}
+	doneOnce sync.Once
+
+	dropOnce sync.Once
+}
+
+// stop releases the client. Safe to call more than once.
+func (c *wsClient) stop() {
+	c.doneOnce.Do(func() { close(c.done) })
+}
+
 // Hub manages WebSocket clients and broadcasts metric snapshots.
 type Hub struct {
-	clients map[*websocket.Conn]struct{}
+	clients map[*wsClient]struct{}
 	mu      sync.RWMutex
 }
 
 // NewHub creates a new WebSocket hub.
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[*websocket.Conn]struct{}),
+		clients: make(map[*wsClient]struct{}),
 	}
+}
+
+// ClientCount returns the number of connected WebSocket clients.
+func (h *Hub) ClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
 }
 
 // HandleWS upgrades HTTP to WebSocket and registers the client.
@@ -35,11 +73,20 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	c := &wsClient{
+		conn: conn,
+		send: make(chan []byte, wsSendQueue),
+		done: make(chan struct{}),
+	}
+
 	h.mu.Lock()
-	h.clients[conn] = struct{}{}
+	h.clients[c] = struct{}{}
+	total := len(h.clients)
 	h.mu.Unlock()
 
-	log.Printf("ws client connected (%d total)", len(h.clients))
+	log.Printf("ws client connected (%d total)", total)
+
+	go c.writePump()
 
 	// Read loop (just to detect disconnect)
 	for {
@@ -48,14 +95,48 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.mu.Lock()
-	delete(h.clients, conn)
-	h.mu.Unlock()
-	conn.Close()
-	log.Printf("ws client disconnected (%d remaining)", len(h.clients))
+	h.remove(c)
 }
 
-// Broadcast sends a snapshot to all connected clients.
+// remove unregisters a client and tears down its connection.
+func (h *Hub) remove(c *wsClient) {
+	h.mu.Lock()
+	_, present := h.clients[c]
+	delete(h.clients, c)
+	remaining := len(h.clients)
+	h.mu.Unlock()
+
+	c.stop()
+	c.conn.Close()
+
+	if present {
+		log.Printf("ws client disconnected (%d remaining)", remaining)
+	}
+}
+
+// writePump is the only goroutine that writes to the client's connection.
+func (c *wsClient) writePump() {
+	for {
+		select {
+		case <-c.done:
+			return
+		case data := <-c.send:
+			if err := c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
+				c.conn.Close()
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				// Closing unblocks the read loop, which unregisters us.
+				c.conn.Close()
+				return
+			}
+		}
+	}
+}
+
+// Broadcast sends a snapshot to all connected clients. It never blocks: a
+// client that cannot keep up loses snapshots and is dropped by its own
+// writePump once a write exceeds wsWriteWait.
 func (h *Hub) Broadcast(snap collector.Snapshot) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -70,14 +151,13 @@ func (h *Hub) Broadcast(snap collector.Snapshot) {
 		return
 	}
 
-	for conn := range h.clients {
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			conn.Close()
-			go func(c *websocket.Conn) {
-				h.mu.Lock()
-				delete(h.clients, c)
-				h.mu.Unlock()
-			}(conn)
+	for c := range h.clients {
+		select {
+		case c.send <- data:
+		default:
+			c.dropOnce.Do(func() {
+				log.Printf("ws client too slow, dropping snapshots")
+			})
 		}
 	}
 }
