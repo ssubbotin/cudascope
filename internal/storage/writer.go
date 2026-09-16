@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/sergey/cudascope/internal/collector"
@@ -18,6 +19,8 @@ func (db *DB) WriteGPUMetrics(metrics []collector.GPUMetrics) error {
 	}
 	defer tx.Rollback()
 
+	seen := make(map[string]struct{})
+
 	stmt, err := tx.Prepare(`INSERT INTO gpu_metrics_raw
 		(ts, node_id, gpu_id, gpu_util, mem_util, mem_used, temperature, fan_speed,
 		 power_draw, power_limit, clock_gfx, clock_mem, pcie_tx, pcie_rx,
@@ -33,6 +36,8 @@ func (db *DB) WriteGPUMetrics(metrics []collector.GPUMetrics) error {
 		if nodeID == "" {
 			nodeID = "local"
 		}
+		seen[nodeID] = struct{}{}
+
 		_, err := stmt.Exec(
 			m.Timestamp, nodeID, m.GPUID, m.GPUUtil, m.MemUtil, m.MemUsed,
 			m.Temperature, m.FanSpeed, m.PowerDraw, m.PowerLimit,
@@ -44,7 +49,14 @@ func (db *DB) WriteGPUMetrics(metrics []collector.GPUMetrics) error {
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	for nodeID := range seen {
+		db.touchNodeSeen(nodeID)
+	}
+	return nil
 }
 
 // WriteHostMetrics inserts a host metrics snapshot.
@@ -60,7 +72,12 @@ func (db *DB) WriteHostMetrics(m *collector.HostMetrics) error {
 		m.DiskUsed, m.DiskTotal, m.NetRx, m.NetTx,
 		m.Load1m, m.Load5m, m.Load15m,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	db.touchNodeSeen(m.NodeID)
+	return nil
 }
 
 // WriteGPUProcesses inserts a GPU process snapshot.
@@ -155,4 +172,21 @@ func (db *DB) UpdateNodeSeen(nodeID string) error {
 
 	_, err := db.conn.Exec(`UPDATE nodes SET last_seen = ? WHERE node_id = ?`, time.Now().Unix(), nodeID)
 	return err
+}
+
+// touchNodeSeen records that fresh data has arrived for a node. The caller
+// must already hold db.mu.
+//
+// It lives on the write path because the local collector writes to storage
+// directly, without going through the ingest handlers that refresh last_seen
+// for remote agents. Without it the local node reports offline from 60
+// seconds after startup onwards, however well collection is going.
+func (db *DB) touchNodeSeen(nodeID string) {
+	if nodeID == "" {
+		return
+	}
+	_, err := db.conn.Exec(`UPDATE nodes SET last_seen = ? WHERE node_id = ?`, time.Now().Unix(), nodeID)
+	if err != nil {
+		log.Printf("update last_seen for node %s: %v", nodeID, err)
+	}
 }
