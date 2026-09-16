@@ -177,6 +177,9 @@ var gpuSeries = series{tiers: []seriesTier{
 			intAvgCol("pcie_tx"), intAvgCol("pcie_rx"),
 			{sel: "pstate", agg: "MIN(pstate)"}, // P0 is the busiest state
 			peakCol("encoder_util"), peakCol("decoder_util"),
+			// A bucket is throttled if any sample in it was, and the counters
+			// only ever grow, so the largest is the one that was true last.
+			peakCol("throttle_reasons"), peakCol("ecc_corrected"), peakCol("ecc_uncorrected"),
 		},
 	},
 	{
@@ -194,6 +197,10 @@ var gpuSeries = series{tiers: []seriesTier{
 			{sel: "CAST(pcie_tx_avg AS INTEGER)", agg: "CAST(AVG(pcie_tx_avg) AS INTEGER)"},
 			{sel: "CAST(pcie_rx_avg AS INTEGER)", agg: "CAST(AVG(pcie_rx_avg) AS INTEGER)"},
 			constCol("0"), constCol("0"), constCol("0"),
+			// The rollups predate these columns: the tiers carry no throttle
+			// mask or ECC counts, and reporting zero here says "not stored",
+			// the same way pstate and the codecs already do.
+			constCol("0"), constCol("0"), constCol("0"),
 		},
 	},
 	{
@@ -206,6 +213,7 @@ var gpuSeries = series{tiers: []seriesTier{
 			peakCol("temperature_max"), constCol("0"),
 			avgCol("power_draw_avg"), constCol("0"),
 			constCol("0"), constCol("0"), constCol("0"), constCol("0"),
+			constCol("0"), constCol("0"), constCol("0"),
 			constCol("0"), constCol("0"), constCol("0"),
 		},
 	},

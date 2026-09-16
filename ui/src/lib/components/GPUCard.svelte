@@ -3,7 +3,7 @@
 	import { alerts, gpuKey } from '$lib/stores/metrics';
 	import ProgressBar from './ProgressBar.svelte';
 	import Sparkline from './Sparkline.svelte';
-	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor, alertName, alertValue } from '$lib/utils/format';
+	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor, alertName, alertValue, throttleReasonNames, isThrottled } from '$lib/utils/format';
 
 	interface Props {
 		device: GPUDevice;
@@ -22,6 +22,8 @@
 		$alerts.filter((a) => a.gpu_id === device.id && a.node_id === (device.node_id || 'local'))
 	);
 	let hasAlert = $derived(gpuAlerts.length > 0);
+	let throttled = $derived(!!metrics && isThrottled(metrics.throttle_reasons));
+	let throttleReasons = $derived(metrics ? throttleReasonNames(metrics.throttle_reasons) : []);
 </script>
 
 <a href={detailHref} class="block">
@@ -44,6 +46,14 @@
 							<line x1="12" y1="9" x2="12" y2="13"/>
 							<line x1="12" y1="17" x2="12.01" y2="17"/>
 						</svg>
+					</span>
+				{/if}
+				{#if throttled}
+					<span
+						class="text-xs px-2 py-0.5 rounded-full bg-orange/10 text-orange border border-orange/20"
+						title="Throttling: {throttleReasons.join(', ')}"
+					>
+						throttled
 					</span>
 				{/if}
 				{#if metrics}

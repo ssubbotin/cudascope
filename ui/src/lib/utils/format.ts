@@ -73,3 +73,26 @@ export function formatDuration(seconds: number): string {
 export function formatClock(unix: number): string {
 	return new Date(unix * 1000).toLocaleString();
 }
+
+// NVML clock throttle reasons, by bit. Idle and the two "someone set the
+// clocks" reasons are states rather than slowdowns, so they are named but
+// not counted as throttling.
+const throttleBits: { bit: number; name: string; slowdown: boolean }[] = [
+	{ bit: 1, name: 'Idle', slowdown: false },
+	{ bit: 2, name: 'App clock limit', slowdown: false },
+	{ bit: 4, name: 'Power cap', slowdown: true },
+	{ bit: 8, name: 'Hardware slowdown', slowdown: true },
+	{ bit: 16, name: 'Sync boost', slowdown: true },
+	{ bit: 32, name: 'Thermal (software)', slowdown: true },
+	{ bit: 64, name: 'Thermal (hardware)', slowdown: true },
+	{ bit: 128, name: 'Power brake', slowdown: true },
+	{ bit: 256, name: 'Display clocks', slowdown: false }
+];
+
+export function throttleReasonNames(mask: number): string[] {
+	return throttleBits.filter((r) => (mask & r.bit) !== 0).map((r) => r.name);
+}
+
+export function isThrottled(mask: number): boolean {
+	return throttleBits.some((r) => r.slowdown && (mask & r.bit) !== 0);
+}

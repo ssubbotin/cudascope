@@ -37,6 +37,9 @@ var migration007 string
 //go:embed migrations/008_raw_unique.sql
 var migration008 string
 
+//go:embed migrations/009_throttle_ecc.sql
+var migration009 string
+
 // Options tunes the queries whose answer depends on how often this
 // deployment collects.
 type Options struct {
@@ -187,6 +190,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 008: %w", err)
 		}
 		log.Println("applied migration 008 (raw unique constraints)")
+	}
+
+	if version < 9 {
+		if _, err := db.conn.Exec(migration009); err != nil {
+			return fmt.Errorf("migration 009: %w", err)
+		}
+		log.Println("applied migration 009 (throttle reasons and ECC)")
 	}
 
 	return nil

@@ -693,6 +693,10 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "cudascope_gpu_pstate{%s} %d\n", labels, g.PState)
 		fmt.Fprintf(w, "cudascope_gpu_encoder_util_percent{%s} %.1f\n", labels, g.EncoderUtil)
 		fmt.Fprintf(w, "cudascope_gpu_decoder_util_percent{%s} %.1f\n", labels, g.DecoderUtil)
+		fmt.Fprintf(w, "cudascope_gpu_throttle_reasons{%s} %d\n", labels, g.ThrottleReasons)
+		fmt.Fprintf(w, "cudascope_gpu_throttled{%s} %d\n", labels, boolValue(g.Throttled()))
+		fmt.Fprintf(w, "cudascope_gpu_ecc_corrected_total{%s} %d\n", labels, g.EccCorrected)
+		fmt.Fprintf(w, "cudascope_gpu_ecc_uncorrected_total{%s} %d\n", labels, g.EccUncorrected)
 	}
 
 	for _, h := range hosts {
@@ -708,6 +712,14 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "cudascope_host_load_5m{%s} %.2f\n", labels, h.Load5m)
 		fmt.Fprintf(w, "cudascope_host_load_15m{%s} %.2f\n", labels, h.Load15m)
 	}
+}
+
+// boolValue renders a flag the way Prometheus expects one.
+func boolValue(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // escapeLabel makes a value safe to place inside a Prometheus label. An

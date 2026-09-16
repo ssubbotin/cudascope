@@ -44,10 +44,10 @@ func (db *DB) GetGPUDevices(nodeID string) ([]collector.GPUDevice, error) {
 	var query string
 	var args []any
 	if nodeID != "" {
-		query = "SELECT node_id, gpu_id, uuid, name, mem_total, driver_ver FROM gpu_devices WHERE node_id = ? ORDER BY gpu_id"
+		query = "SELECT node_id, gpu_id, uuid, name, mem_total, driver_ver, ecc_supported, throttle_supported FROM gpu_devices WHERE node_id = ? ORDER BY gpu_id"
 		args = []any{nodeID}
 	} else {
-		query = "SELECT node_id, gpu_id, uuid, name, mem_total, driver_ver FROM gpu_devices ORDER BY node_id, gpu_id"
+		query = "SELECT node_id, gpu_id, uuid, name, mem_total, driver_ver, ecc_supported, throttle_supported FROM gpu_devices ORDER BY node_id, gpu_id"
 	}
 
 	rows, err := db.conn.Query(query, args...)
@@ -59,7 +59,8 @@ func (db *DB) GetGPUDevices(nodeID string) ([]collector.GPUDevice, error) {
 	var devices []collector.GPUDevice
 	for rows.Next() {
 		var d collector.GPUDevice
-		if err := rows.Scan(&d.NodeID, &d.ID, &d.UUID, &d.Name, &d.MemTotal, &d.DriverVer); err != nil {
+		if err := rows.Scan(&d.NodeID, &d.ID, &d.UUID, &d.Name, &d.MemTotal, &d.DriverVer,
+			&d.EccSupported, &d.ThrottleSupported); err != nil {
 			return nil, err
 		}
 		devices = append(devices, d)
@@ -98,6 +99,7 @@ func scanGPUMetrics(rows *sql.Rows) ([]collector.GPUMetrics, error) {
 			&m.Temperature, &m.FanSpeed, &m.PowerDraw, &m.PowerLimit,
 			&m.ClockGfx, &m.ClockMem, &m.PCIeTx, &m.PCIeRx,
 			&m.PState, &m.EncoderUtil, &m.DecoderUtil,
+			&m.ThrottleReasons, &m.EccCorrected, &m.EccUncorrected,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
@@ -180,13 +182,15 @@ func (db *DB) GetLatestGPUMetrics() ([]collector.GPUMetrics, error) {
 			SELECT ts, COALESCE(node_id, 'local') as node_id, gpu_id, gpu_util, mem_util, mem_used,
 				temperature, fan_speed, power_draw, power_limit, clock_gfx, clock_mem,
 				pcie_tx, pcie_rx, pstate, encoder_util, decoder_util,
+				throttle_reasons, ecc_corrected, ecc_uncorrected,
 				ROW_NUMBER() OVER (PARTITION BY COALESCE(node_id, 'local'), gpu_id ORDER BY ts DESC) as rn
 			FROM gpu_metrics_raw
 			WHERE ts >= ?
 		)
 		SELECT ts, node_id, gpu_id, gpu_util, mem_util, mem_used,
 			temperature, fan_speed, power_draw, power_limit, clock_gfx, clock_mem,
-			pcie_tx, pcie_rx, pstate, encoder_util, decoder_util
+			pcie_tx, pcie_rx, pstate, encoder_util, decoder_util,
+			throttle_reasons, ecc_corrected, ecc_uncorrected
 		FROM latest WHERE rn = 1 ORDER BY node_id, gpu_id`, cutoff)
 	if err != nil {
 		return nil, err
@@ -199,7 +203,8 @@ func (db *DB) GetLatestGPUMetrics() ([]collector.GPUMetrics, error) {
 		err := rows.Scan(&m.Timestamp, &m.NodeID, &m.GPUID, &m.GPUUtil, &m.MemUtil, &m.MemUsed,
 			&m.Temperature, &m.FanSpeed, &m.PowerDraw, &m.PowerLimit,
 			&m.ClockGfx, &m.ClockMem, &m.PCIeTx, &m.PCIeRx,
-			&m.PState, &m.EncoderUtil, &m.DecoderUtil)
+			&m.PState, &m.EncoderUtil, &m.DecoderUtil,
+			&m.ThrottleReasons, &m.EccCorrected, &m.EccUncorrected)
 		if err != nil {
 			return nil, err
 		}

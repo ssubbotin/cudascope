@@ -8,6 +8,8 @@ export interface GPUDevice {
 	name: string;
 	mem_total: number;
 	driver_ver: string;
+	ecc_supported: boolean;
+	throttle_supported: boolean;
 }
 
 export interface GPUMetrics {
@@ -28,6 +30,9 @@ export interface GPUMetrics {
 	pstate: number;
 	encoder_util: number;
 	decoder_util: number;
+	throttle_reasons: number;
+	ecc_corrected: number;
+	ecc_uncorrected: number;
 }
 
 export interface HostMetrics {

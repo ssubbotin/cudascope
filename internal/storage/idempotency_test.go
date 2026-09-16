@@ -144,3 +144,64 @@ func TestTheMigrationFoldsExistingDuplicates(t *testing.T) {
 	}
 	db.Close()
 }
+
+// The mask says why a card slowed down and the counters say whether its
+// memory is failing: both are worth nothing if they do not survive the trip
+// through storage.
+func TestThrottleAndEccSurviveTheRoundTrip(t *testing.T) {
+	db := openTestDBWith(t, Options{})
+	ts := time.Now().Unix()
+
+	err := db.WriteGPUMetrics([]collector.GPUMetrics{{
+		NodeID: "local", GPUID: 0, Timestamp: ts, GPUUtil: 90,
+		ThrottleReasons: 4 | 32, EccCorrected: 17, EccUncorrected: 2,
+	}})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	metrics, err := db.GetGPUMetrics(GPUMetricsQuery{GPUID: 0, NodeID: "local", From: ts - 60, To: ts + 60})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(metrics) != 1 {
+		t.Fatalf("want one row, got %d", len(metrics))
+	}
+	if metrics[0].ThrottleReasons != 4|32 {
+		t.Fatalf("throttle mask = %d", metrics[0].ThrottleReasons)
+	}
+	if metrics[0].EccCorrected != 17 || metrics[0].EccUncorrected != 2 {
+		t.Fatalf("ecc counters = %d/%d", metrics[0].EccCorrected, metrics[0].EccUncorrected)
+	}
+	if !metrics[0].Throttled() {
+		t.Fatal("a stored mask with a power cap in it does not read as throttled")
+	}
+
+	latest, err := db.GetLatestGPUMetrics()
+	if err != nil {
+		t.Fatalf("latest: %v", err)
+	}
+	if len(latest) != 1 || latest[0].ThrottleReasons != 4|32 {
+		t.Fatalf("the status snapshot lost the mask: %+v", latest)
+	}
+}
+
+func TestDeviceCapabilitiesSurviveRegistration(t *testing.T) {
+	db := openTestDBWith(t, Options{})
+
+	err := db.RegisterGPUDevices("local", []collector.GPUDevice{{
+		ID: 0, UUID: "GPU-1", Name: "A100", MemTotal: 81920, DriverVer: "550",
+		EccSupported: true, ThrottleSupported: true,
+	}})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	devices, err := db.GetGPUDevices("local")
+	if err != nil {
+		t.Fatalf("read devices: %v", err)
+	}
+	if len(devices) != 1 || !devices[0].EccSupported || !devices[0].ThrottleSupported {
+		t.Fatalf("capabilities lost: %+v", devices)
+	}
+}

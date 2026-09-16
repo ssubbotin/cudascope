@@ -7,7 +7,7 @@
 	import ProcessList from '$lib/components/ProcessList.svelte';
 	import { devices, latestGPU, processes, fetchGPUHistory, gpuKey, parseRangeSeconds, isLiveRange, appendPoint } from '$lib/stores/metrics';
 	import type { GPUMetrics } from '$lib/stores/metrics';
-	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor } from '$lib/utils/format';
+	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor, throttleReasonNames, isThrottled } from '$lib/utils/format';
 
 	let gpuId = $derived(parseInt($page.params.id ?? '0'));
 	let nodeId = $derived($page.url.searchParams.get('node') || 'local');
@@ -58,6 +58,9 @@
 		if (isConnected && !wasConnected && historyLoaded) loadHistory(selectedRange, true);
 		wasConnected = isConnected;
 	});
+
+	let throttleReasons = $derived(metrics ? throttleReasonNames(metrics.throttle_reasons) : []);
+	let throttled = $derived(!!metrics && isThrottled(metrics.throttle_reasons));
 
 	let ts = $derived(historyData.map((m) => m.ts));
 	const SYNC = 'gpu-detail';
@@ -185,6 +188,43 @@
 				<div class="text-xs text-text-muted">PState</div>
 				<div class="text-xl font-mono font-semibold text-green">P{metrics.pstate}</div>
 			</div>
+		</div>
+	{/if}
+
+	{#if metrics && device && (device.throttle_supported || device.ecc_supported)}
+		<div class="bg-bg-card border border-border rounded-xl p-5 space-y-3">
+			<h3 class="text-xs font-medium text-text-muted">Health</h3>
+
+			{#if device.throttle_supported}
+				<div class="flex flex-wrap items-center gap-2 text-sm">
+					<span class="text-text-muted">Clocks:</span>
+					{#if throttleReasons.length === 0}
+						<span class="text-green">unconstrained</span>
+					{:else}
+						{#each throttleReasons as reason}
+							<span
+								class="text-xs px-2 py-0.5 rounded-full border {throttled
+									? 'bg-orange/10 text-orange border-orange/20'
+									: 'bg-bg-secondary text-text-muted border-border'}"
+							>
+								{reason}
+							</span>
+						{/each}
+					{/if}
+				</div>
+			{/if}
+
+			{#if device.ecc_supported}
+				<div class="flex flex-wrap items-center gap-4 text-sm">
+					<span class="text-text-muted">Memory errors (lifetime):</span>
+					<span class="text-text-primary">corrected {metrics.ecc_corrected}</span>
+					<span class={metrics.ecc_uncorrected > 0 ? 'text-red' : 'text-text-primary'}>
+						uncorrected {metrics.ecc_uncorrected}
+					</span>
+				</div>
+			{:else}
+				<p class="text-xs text-text-muted">This card does not report ECC counters.</p>
+			{/if}
 		</div>
 	{/if}
 

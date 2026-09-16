@@ -53,11 +53,13 @@ func NewGPUCollector() (*GPUCollector, error) {
 		memInfo, _ := dev.GetMemoryInfo()
 
 		gc.info[i] = GPUDevice{
-			ID:        i,
-			UUID:      uuid,
-			Name:      name,
-			MemTotal:  memInfo.Total / (1024 * 1024),
-			DriverVer: driverVer,
+			ID:                i,
+			UUID:              uuid,
+			Name:              name,
+			MemTotal:          memInfo.Total / (1024 * 1024),
+			DriverVer:         driverVer,
+			EccSupported:      supportsECC(dev),
+			ThrottleSupported: supportsThrottleReasons(dev),
 		}
 	}
 
@@ -83,6 +85,22 @@ type gpuDevice interface {
 	GetPerformanceState() (nvml.Pstates, nvml.Return)
 	GetEncoderUtilization() (uint32, uint32, nvml.Return)
 	GetDecoderUtilization() (uint32, uint32, nvml.Return)
+	GetCurrentClocksThrottleReasons() (uint64, nvml.Return)
+	GetTotalEccErrors(nvml.MemoryErrorType, nvml.EccCounterType) (uint64, nvml.Return)
+}
+
+// supportsECC and supportsThrottleReasons ask the card once, at startup.
+// Consumer cards answer ERROR_NOT_SUPPORTED to the ECC calls for ever, and
+// storing their zeros as "no errors" would be a clean bill of health nobody
+// measured.
+func supportsECC(dev gpuDevice) bool {
+	_, ret := dev.GetTotalEccErrors(nvml.MEMORY_ERROR_TYPE_CORRECTED, nvml.AGGREGATE_ECC)
+	return ret == nvml.SUCCESS
+}
+
+func supportsThrottleReasons(dev gpuDevice) bool {
+	_, ret := dev.GetCurrentClocksThrottleReasons()
+	return ret == nvml.SUCCESS
 }
 
 // Collect reads current metrics from all GPUs. Devices that answered nothing
@@ -180,6 +198,21 @@ func collectDevice(dev gpuDevice, id int, now int64) (GPUMetrics, bool) {
 	if util, _, ret := dev.GetDecoderUtilization(); ret == nvml.SUCCESS {
 		ok = true
 		m.DecoderUtil = float64(util)
+	}
+
+	if reasons, ret := dev.GetCurrentClocksThrottleReasons(); ret == nvml.SUCCESS {
+		ok = true
+		m.ThrottleReasons = reasons
+	}
+
+	if count, ret := dev.GetTotalEccErrors(nvml.MEMORY_ERROR_TYPE_CORRECTED, nvml.AGGREGATE_ECC); ret == nvml.SUCCESS {
+		ok = true
+		m.EccCorrected = count
+	}
+
+	if count, ret := dev.GetTotalEccErrors(nvml.MEMORY_ERROR_TYPE_UNCORRECTED, nvml.AGGREGATE_ECC); ret == nvml.SUCCESS {
+		ok = true
+		m.EccUncorrected = count
 	}
 
 	return m, ok
