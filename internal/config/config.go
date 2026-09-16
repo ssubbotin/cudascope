@@ -14,6 +14,7 @@ type Config struct {
 	NodeID                string
 	CollectInterval       time.Duration
 	HostInterval          time.Duration
+	ProcessInterval       time.Duration
 	CollectStaleAfter     time.Duration
 	CollectStallExitAfter time.Duration
 	RetentionRaw          time.Duration
@@ -43,6 +44,7 @@ func Load() *Config {
 	flag.StringVar(&cfg.NodeID, "node-id", envOrDefault("CUDASCOPE_NODE_ID", ""), "node identifier (default: hostname)")
 	flag.DurationVar(&cfg.CollectInterval, "collect-interval", envOrDefaultDuration("CUDASCOPE_COLLECT_INTERVAL", time.Second), "GPU metric collection interval")
 	flag.DurationVar(&cfg.HostInterval, "host-interval", envOrDefaultDuration("CUDASCOPE_HOST_INTERVAL", 5*time.Second), "host metric collection interval")
+	flag.DurationVar(&cfg.ProcessInterval, "process-interval", envOrDefaultDuration("CUDASCOPE_PROCESS_INTERVAL", 5*time.Second), "GPU process list collection interval")
 	flag.DurationVar(&cfg.CollectStaleAfter, "collect-stale-after", envOrDefaultDuration("CUDASCOPE_COLLECT_STALE_AFTER", time.Minute), "standalone only: healthz fails when no GPU metric has been collected for this long (0 = disabled)")
 	flag.DurationVar(&cfg.CollectStallExitAfter, "collect-stall-exit-after", envOrDefaultDuration("CUDASCOPE_COLLECT_STALL_EXIT_AFTER", 5*time.Minute), "standalone only: exit when no GPU metric has been collected for this long, so the supervisor restarts us (0 = disabled)")
 	flag.DurationVar(&cfg.RetentionRaw, "retention-raw", envOrDefaultDuration("CUDASCOPE_RETENTION_RAW", 24*time.Hour), "raw metrics retention")

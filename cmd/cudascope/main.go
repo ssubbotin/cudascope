@@ -117,15 +117,9 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 	engine := newAlertEngine(db, cfg, localNodeID)
 
 	// Start collector
-	col := collector.New(gpuCol, hostCol, db, hub, cfg.CollectInterval, cfg.HostInterval)
+	col := collector.New(gpuCol, hostCol, db, hub, cfg.CollectInterval, cfg.HostInterval, cfg.ProcessInterval)
 	col.SetAlerts(engine)
-
-	// Optional vLLM collector
-	if cfg.VLLMUrl != "" {
-		vllmCol := collector.NewVLLMCollector(cfg.VLLMUrl, localNodeID)
-		col.SetVLLM(vllmCol, cfg.VLLMInterval)
-		log.Printf("vLLM metrics collection enabled: %s (interval=%s)", cfg.VLLMUrl, cfg.VLLMInterval)
-	}
+	enableVLLM(col, cfg, localNodeID)
 
 	go col.Run(ctx)
 
@@ -228,7 +222,8 @@ func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config
 	}()
 
 	// Start collector with agent sink (no broadcast — no local WS clients)
-	col := collector.New(gpuCol, hostCol, agentSink, nil, cfg.CollectInterval, cfg.HostInterval)
+	col := collector.New(gpuCol, hostCol, agentSink, nil, cfg.CollectInterval, cfg.HostInterval, cfg.ProcessInterval)
+	enableVLLM(col, cfg, nodeID)
 	go col.Run(ctx)
 
 	// Minimal health endpoint for Docker healthcheck
@@ -271,6 +266,19 @@ func newAPIServer(db *storage.DB, hub *api.Hub, engine *alerts.Engine, cfg *conf
 	}
 	opts.UIFS = fs
 	return api.NewServer(opts)
+}
+
+// enableVLLM turns on vLLM scraping when a URL is configured.
+//
+// Shared by standalone and agent mode on purpose: the ingest route, the sink
+// method and the column all existed while agent mode alone never called
+// this, so a Swarm deployment had no vLLM metrics and nothing said why.
+func enableVLLM(col *collector.Collector, cfg *config.Config, nodeID string) {
+	if cfg.VLLMUrl == "" {
+		return
+	}
+	col.SetVLLM(collector.NewVLLMCollector(cfg.VLLMUrl, nodeID), cfg.VLLMInterval)
+	log.Printf("vLLM metrics collection enabled: %s (interval=%s)", cfg.VLLMUrl, cfg.VLLMInterval)
 }
 
 // storageOptions ties the queries that answer "what is current" to how

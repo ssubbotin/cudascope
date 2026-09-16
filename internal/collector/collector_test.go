@@ -190,3 +190,99 @@ type silentGPU struct{}
 
 func (silentGPU) Collect() []GPUMetrics          { return nil }
 func (silentGPU) CollectProcesses() []GPUProcess { return nil }
+
+// countingGPU counts metric ticks and process enumerations separately.
+type countingGPU struct {
+	metrics atomic.Int64
+	procs   atomic.Int64
+}
+
+func (g *countingGPU) Collect() []GPUMetrics {
+	g.metrics.Add(1)
+	return []GPUMetrics{{NodeID: "local", GPUID: 0, Timestamp: time.Now().Unix()}}
+}
+
+func (g *countingGPU) CollectProcesses() []GPUProcess {
+	g.procs.Add(1)
+	return []GPUProcess{{NodeID: "local", GPUID: 0, PID: 1, Name: "train", Timestamp: time.Now().Unix()}}
+}
+
+// Enumerating processes costs a /proc read per process and a stored row per
+// process. Doing it on the GPU tick meant a second-by-second process table
+// that dwarfed the metrics it accompanied, for a list that changes rarely.
+func TestProcessesFollowTheirOwnCadence(t *testing.T) {
+	gpu := &countingGPU{}
+	c := &Collector{
+		gpu:          gpu,
+		host:         &countingHost{},
+		storage:      nopSink{},
+		gpuInterval:  5 * time.Millisecond,
+		hostInterval: time.Hour,
+		procInterval: time.Hour,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	if !waitForCount(&gpu.metrics, 10, 2*time.Second) {
+		t.Fatalf("want at least 10 metric ticks, got %d", gpu.metrics.Load())
+	}
+	if got := gpu.procs.Load(); got > 1 {
+		t.Fatalf("processes were enumerated %d times while the GPU ticked %d times",
+			got, gpu.metrics.Load())
+	}
+}
+
+func TestProcessesAreStillCollected(t *testing.T) {
+	gpu := &countingGPU{}
+	c := &Collector{
+		gpu:          gpu,
+		host:         &countingHost{},
+		storage:      nopSink{},
+		gpuInterval:  time.Hour,
+		hostInterval: time.Hour,
+		procInterval: 5 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	if !waitForCount(&gpu.procs, 3, 2*time.Second) {
+		t.Fatalf("want the process loop running, got %d enumerations", gpu.procs.Load())
+	}
+	if got := gpu.metrics.Load(); got > 1 {
+		t.Fatalf("the process loop dragged the GPU loop along: %d metric ticks", got)
+	}
+}
+
+// time.NewTicker panics on a zero interval, so a source whose interval was
+// never set used to take the process down on startup.
+func TestAnUnsetIntervalFallsBackInsteadOfPanicking(t *testing.T) {
+	gpu := &countingGPU{}
+	c := &Collector{
+		gpu:     gpu,
+		host:    &countingHost{},
+		storage: nopSink{},
+		// every interval left at zero on purpose
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
