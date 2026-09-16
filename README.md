@@ -73,6 +73,10 @@ All settings via environment variables or CLI flags:
 | `CUDASCOPE_ALERT_TEMP` | `--alert-temp` | `0` | Temperature alert threshold (C) |
 | `CUDASCOPE_ALERT_GPU_UTIL` | `--alert-gpu-util` | `0` | GPU utilization alert (%) |
 | `CUDASCOPE_ALERT_MEM_UTIL` | `--alert-mem-util` | `0` | Memory utilization alert (%) |
+| `CUDASCOPE_ALERT_FOR` | `--alert-for` | `30s` | How long a threshold must be exceeded before an alert opens |
+| `CUDASCOPE_ALERT_CLEAR` | `--alert-clear` | `1m` | How long a metric must be normal again before an alert closes |
+| `CUDASCOPE_NODE_OFFLINE_AFTER` | `--node-offline-after` | `1m` | Silence after which a node counts as offline and raises an alert |
+| `CUDASCOPE_RETENTION_ALERTS` | `--retention-alerts` | `2160h` | Closed alert event retention (90d) |
 
 Alert thresholds of `0` mean disabled. vLLM URL empty means disabled.
 
@@ -113,11 +117,27 @@ When running in Swarm mode:
 
 ### Alerts
 
-Set thresholds via config. When exceeded:
+Thresholds are evaluated on the collection path, on every sample, in every
+mode. Nothing has to be watching for an alert to fire or to be recorded.
 
-- Alert count badge in navbar
-- Red border and warning icon on affected GPU cards
-- Alert details via `/api/v1/alerts`
+- An alert opens once the threshold has held for `--alert-for` and closes once
+  the metric has been normal again for `--alert-clear`, so a value hovering at
+  the threshold produces one event rather than hundreds
+- Every alert is a row from the moment it opened to the moment it cleared, with
+  its peak value and duration, kept for `--retention-alerts`
+- Silence raises alerts too: `node_silent` when a node stops reporting,
+  `collector_stalled` when local collection stops producing
+- The journal lives at `/alerts` in the UI; the navbar badge links to it
+- Open alerts reach open browser tabs over the websocket, so a dashboard left
+  on a second screen stays current
+
+| Kind | Raised when |
+|------|-------------|
+| `temperature` | GPU temperature at or above `--alert-temp` |
+| `gpu_util` | GPU utilization at or above `--alert-gpu-util` |
+| `mem_util` | Memory utilization at or above `--alert-mem-util` |
+| `node_silent` | A node with registered GPUs has not reported for `--node-offline-after` |
+| `collector_stalled` | Standalone only: local collection is older than `--collect-stale-after` |
 
 ### vLLM Integration
 
@@ -183,12 +203,18 @@ Preset ranges: 5m, 15m, 1h, 6h, 24h. Auto-refresh toggle and manual refresh butt
 | `/api/v1/host/metrics?range=5m` | GET | Historical host metrics |
 | `/api/v1/vllm/status` | GET | Latest vLLM snapshot |
 | `/api/v1/vllm/metrics?range=5m` | GET | Historical vLLM metrics |
-| `/api/v1/alerts` | GET | Active alerts and config |
+| `/api/v1/alerts` | GET | Open alerts and configured thresholds |
+| `/api/v1/alerts/history?range=24h` | GET | Alert journal, newest first (`?node=`, `?kind=`, `?limit=`) |
 | `/api/v1/ws` | WS | Real-time metric stream |
 | `/api/v1/healthz` | GET | Health check |
 | `/metrics` | GET | Prometheus exposition |
 
 Query parameters: `?range=5m`, `?from=&to=` (unix timestamps), `?node=` (filter by node).
+
+The websocket carries metric snapshots (`gpu_metrics`, `host_metrics`,
+`gpu_processes`, `vllm_metrics`) and a `state` snapshot with the node list,
+device list and open alerts, sent whenever they change and every 15 seconds
+regardless.
 
 ## Architecture
 
