@@ -16,6 +16,7 @@ import (
 	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/config"
 	"github.com/sergey/cudascope/internal/storage"
+	"github.com/sergey/cudascope/internal/watchdog"
 )
 
 func main() {
@@ -114,6 +115,12 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 	}
 
 	go col.Run(ctx)
+
+	// Collection that wedges cannot be unstuck from inside: an NVML call is a
+	// cgo call with no timeout. Exit instead and let the restart policy work.
+	go watchdog.Run(ctx, db, cfg.CollectStallExitAfter, func(age time.Duration) {
+		log.Fatalf("no GPU metrics for %s, exiting so the supervisor restarts us", age.Truncate(time.Second))
+	})
 
 	// Start retention
 	go db.RunRetention(ctx, storage.RetentionConfig{

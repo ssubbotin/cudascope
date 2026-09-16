@@ -7,25 +7,26 @@ import (
 )
 
 type Config struct {
-	Mode              string
-	Port              int
-	DataDir           string
-	HubURL            string
-	NodeID            string
-	CollectInterval   time.Duration
-	HostInterval      time.Duration
-	CollectStaleAfter time.Duration
-	RetentionRaw      time.Duration
-	Retention1m       time.Duration
-	Retention1h       time.Duration
-	DevMode           bool
-	UIDir             string
-	Auth              string // "user:password" for basic auth (empty = disabled)
-	AlertTempMax      int    // temperature alert threshold (°C, 0 = disabled)
-	AlertGPUUtil      int    // GPU utilization alert threshold (%, 0 = disabled)
-	AlertMemUtil      int    // memory utilization alert threshold (%, 0 = disabled)
-	VLLMUrl           string // vLLM metrics endpoint base URL (empty = disabled)
-	VLLMInterval      time.Duration
+	Mode                  string
+	Port                  int
+	DataDir               string
+	HubURL                string
+	NodeID                string
+	CollectInterval       time.Duration
+	HostInterval          time.Duration
+	CollectStaleAfter     time.Duration
+	CollectStallExitAfter time.Duration
+	RetentionRaw          time.Duration
+	Retention1m           time.Duration
+	Retention1h           time.Duration
+	DevMode               bool
+	UIDir                 string
+	Auth                  string // "user:password" for basic auth (empty = disabled)
+	AlertTempMax          int    // temperature alert threshold (°C, 0 = disabled)
+	AlertGPUUtil          int    // GPU utilization alert threshold (%, 0 = disabled)
+	AlertMemUtil          int    // memory utilization alert threshold (%, 0 = disabled)
+	VLLMUrl               string // vLLM metrics endpoint base URL (empty = disabled)
+	VLLMInterval          time.Duration
 }
 
 func Load() *Config {
@@ -39,6 +40,7 @@ func Load() *Config {
 	flag.DurationVar(&cfg.CollectInterval, "collect-interval", envOrDefaultDuration("CUDASCOPE_COLLECT_INTERVAL", time.Second), "GPU metric collection interval")
 	flag.DurationVar(&cfg.HostInterval, "host-interval", envOrDefaultDuration("CUDASCOPE_HOST_INTERVAL", 5*time.Second), "host metric collection interval")
 	flag.DurationVar(&cfg.CollectStaleAfter, "collect-stale-after", envOrDefaultDuration("CUDASCOPE_COLLECT_STALE_AFTER", time.Minute), "healthz fails when no GPU metric has been collected for this long (0 = disabled)")
+	flag.DurationVar(&cfg.CollectStallExitAfter, "collect-stall-exit-after", envOrDefaultDuration("CUDASCOPE_COLLECT_STALL_EXIT_AFTER", 5*time.Minute), "exit when no GPU metric has been collected for this long, so the supervisor restarts us (0 = disabled)")
 	flag.DurationVar(&cfg.RetentionRaw, "retention-raw", envOrDefaultDuration("CUDASCOPE_RETENTION_RAW", 24*time.Hour), "raw metrics retention")
 	flag.DurationVar(&cfg.Retention1m, "retention-1m", envOrDefaultDuration("CUDASCOPE_RETENTION_1M", 30*24*time.Hour), "1-minute rollup retention")
 	flag.DurationVar(&cfg.Retention1h, "retention-1h", envOrDefaultDuration("CUDASCOPE_RETENTION_1H", 365*24*time.Hour), "1-hour rollup retention")
