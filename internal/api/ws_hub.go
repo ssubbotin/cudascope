@@ -139,6 +139,16 @@ func (c *wsClient) writePump() {
 // one whose connection stalls outright is dropped by its own writePump once
 // a write exceeds wsWriteWait.
 func (h *Hub) Broadcast(snap collector.Snapshot) {
+	h.send(snap)
+}
+
+// BroadcastState sends a state snapshot to all connected clients, under the
+// same never-block rules as a metric snapshot.
+func (h *Hub) BroadcastState(snap StateSnapshot) {
+	h.send(snap)
+}
+
+func (h *Hub) send(msg any) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -146,7 +156,7 @@ func (h *Hub) Broadcast(snap collector.Snapshot) {
 		return
 	}
 
-	data, err := json.Marshal(snap)
+	data, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("ws marshal error: %v", err)
 		return

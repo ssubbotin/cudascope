@@ -372,3 +372,9 @@ func (e *Engine) announce() {
 		fn()
 	}
 }
+
+// Config returns the thresholds this engine judges by, for the API to
+// report alongside the events.
+func (e *Engine) Config() Config {
+	return e.cfg
+}

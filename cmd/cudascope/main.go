@@ -12,6 +12,7 @@ import (
 
 	cudascope "github.com/sergey/cudascope"
 	"github.com/sergey/cudascope/internal/agent"
+	"github.com/sergey/cudascope/internal/alerts"
 	"github.com/sergey/cudascope/internal/api"
 	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/config"
@@ -21,6 +22,10 @@ import (
 
 // localNodeID is the node that standalone mode registers itself under.
 const localNodeID = "local"
+
+// alertSweepInterval is how often silence is checked for. It is unrelated
+// to the collection interval: this looks at ages, not at samples.
+const alertSweepInterval = 5 * time.Second
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -77,7 +82,7 @@ func main() {
 
 func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) *http.Server {
 	// Open database
-	db, err := storage.Open(cfg.DataDir)
+	db, err := storage.Open(cfg.DataDir, storageOptions(cfg))
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
@@ -107,8 +112,13 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 	// WebSocket hub
 	hub := api.NewHub()
 
+	// Alert engine: thresholds are judged where samples are collected, so an
+	// unattended dashboard is no longer an unevaluated GPU.
+	engine := newAlertEngine(db, cfg, localNodeID)
+
 	// Start collector
 	col := collector.New(gpuCol, hostCol, db, hub, cfg.CollectInterval, cfg.HostInterval)
+	col.SetAlerts(engine)
 
 	// Optional vLLM collector
 	if cfg.VLLMUrl != "" {
@@ -126,14 +136,13 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 	})
 
 	// Start retention
-	go db.RunRetention(ctx, storage.RetentionConfig{
-		Raw: cfg.RetentionRaw,
-		M1:  cfg.Retention1m,
-		H1:  cfg.Retention1h,
-	})
+	go db.RunRetention(ctx, retentionConfig(cfg))
+
+	go runAlertSweep(ctx, engine)
 
 	// Start API server
-	server := newAPIServer(db, hub, cfg)
+	server := newAPIServer(db, hub, engine, cfg)
+	go server.RunStateBroadcast(ctx)
 	// Hub mode leaves this off: there the data freshness reports on the
 	// agents, not on this process.
 	server.SetCollectorWatchdog(localNodeID, cfg.CollectStaleAfter)
@@ -150,7 +159,7 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 
 func runHub(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) *http.Server {
 	// Open database
-	db, err := storage.Open(cfg.DataDir)
+	db, err := storage.Open(cfg.DataDir, storageOptions(cfg))
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
@@ -162,14 +171,16 @@ func runHub(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) 
 	hub := api.NewHub()
 
 	// Start retention
-	go db.RunRetention(ctx, storage.RetentionConfig{
-		Raw: cfg.RetentionRaw,
-		M1:  cfg.Retention1m,
-		H1:  cfg.Retention1h,
-	})
+	go db.RunRetention(ctx, retentionConfig(cfg))
+
+	// Hub mode judges the samples its agents push. It names no local node:
+	// there is no collector of its own to call stalled.
+	engine := newAlertEngine(db, cfg, "")
+	go runAlertSweep(ctx, engine)
 
 	// Start API server (with ingest endpoints)
-	server := newAPIServer(db, hub, cfg)
+	server := newAPIServer(db, hub, engine, cfg)
+	go server.RunStateBroadcast(ctx)
 	httpSrv := server.HTTPServer(cfg.Port)
 	go func() {
 		log.Printf("HTTP server listening on :%d", cfg.Port)
@@ -239,21 +250,81 @@ func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config
 	return httpSrv
 }
 
-func newAPIServer(db *storage.DB, hub *api.Hub, cfg *config.Config) *api.Server {
-	alertCfg := api.AlertConfig{
-		TempMax: cfg.AlertTempMax,
-		GPUUtil: cfg.AlertGPUUtil,
-		MemUtil: cfg.AlertMemUtil,
+func newAPIServer(db *storage.DB, hub *api.Hub, engine *alerts.Engine, cfg *config.Config) *api.Server {
+	opts := api.Options{
+		Store:  db,
+		Hub:    hub,
+		Alerts: engine,
+		Auth:   cfg.Auth,
 	}
+
 	if cfg.DevMode {
-		return api.NewServer(db, hub, nil, true, cfg.UIDir, cfg.Auth, alertCfg)
+		opts.DevMode = true
+		opts.UIDir = cfg.UIDir
+		return api.NewServer(opts)
 	}
+
 	fs, err := cudascope.UIFS()
 	if err != nil {
 		log.Printf("warning: embedded UI not available: %v", err)
-		return api.NewServer(db, hub, nil, false, "", cfg.Auth, alertCfg)
+		return api.NewServer(opts)
 	}
-	return api.NewServer(db, hub, fs, false, "", cfg.Auth, alertCfg)
+	opts.UIFS = fs
+	return api.NewServer(opts)
+}
+
+// storageOptions ties the queries that answer "what is current" to how
+// often this deployment actually collects.
+func storageOptions(cfg *config.Config) storage.Options {
+	return storage.Options{
+		FreshWindow:      cfg.FreshWindow(),
+		NodeOfflineAfter: cfg.NodeOfflineAfter,
+	}
+}
+
+func retentionConfig(cfg *config.Config) storage.RetentionConfig {
+	return storage.RetentionConfig{
+		Raw:    cfg.RetentionRaw,
+		M1:     cfg.Retention1m,
+		H1:     cfg.Retention1h,
+		Alerts: cfg.RetentionAlerts,
+	}
+}
+
+// newAlertEngine builds the evaluator and adopts whatever the previous run
+// left open.
+func newAlertEngine(db *storage.DB, cfg *config.Config, localNode string) *alerts.Engine {
+	engine := alerts.New(alerts.Config{
+		TempMax:           cfg.AlertTempMax,
+		GPUUtil:           cfg.AlertGPUUtil,
+		MemUtil:           cfg.AlertMemUtil,
+		For:               cfg.AlertFor,
+		Clear:             cfg.AlertClear,
+		NodeOfflineAfter:  cfg.NodeOfflineAfter,
+		CollectStaleAfter: cfg.CollectStaleAfter,
+		LocalNodeID:       localNode,
+	}, db, time.Now)
+
+	if err := engine.Restore(); err != nil {
+		log.Printf("warning: could not adopt open alert events: %v", err)
+	}
+	return engine
+}
+
+// runAlertSweep raises the alerts no incoming sample can raise: a node that
+// stopped reporting, and collection that stopped producing.
+func runAlertSweep(ctx context.Context, engine *alerts.Engine) {
+	ticker := time.NewTicker(alertSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			engine.Sweep()
+		}
+	}
 }
 
 func logDevices(devices []collector.GPUDevice) {

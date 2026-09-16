@@ -9,68 +9,88 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/sergey/cudascope/internal/alerts"
 	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/storage"
 )
 
-// AlertConfig holds configurable alert thresholds.
-type AlertConfig struct {
-	TempMax int // °C, 0 = disabled
-	GPUUtil int // %, 0 = disabled
-	MemUtil int // %, 0 = disabled
-}
+// Options configures the API server. It is a struct because the
+// constructor had grown to seven positional arguments, three of them empty
+// strings at most call sites.
+type Options struct {
+	Store  *storage.DB
+	Hub    *Hub
+	Alerts *alerts.Engine // nil in agent mode: no thresholds are judged here
 
-// Alert represents an active alert.
-type Alert struct {
-	NodeID string  `json:"node_id"`
-	GPUID  int     `json:"gpu_id"`
-	Metric string  `json:"metric"` // "temperature", "gpu_util", "mem_util"
-	Value  float64 `json:"value"`
-	Thresh float64 `json:"threshold"`
+	UIFS    fs.FS  // embedded UI, nil when it was not built in
+	DevMode bool   // serve the UI from the filesystem
+	UIDir   string // where, in dev mode
+	Auth    string // "user:password", empty disables
+
+	// StateInterval is how often the state snapshot is resent even when
+	// nothing changed. Zero selects the default.
+	StateInterval time.Duration
 }
 
 // Server is the HTTP API server.
 type Server struct {
-	store    *storage.DB
-	hub      *Hub
-	mux      *http.ServeMux
-	uiFS     fs.FS // embedded or filesystem UI
-	devMode  bool
-	uiDir    string
+	store   *storage.DB
+	hub     *Hub
+	alerts  *alerts.Engine
+	mux     *http.ServeMux
+	uiFS    fs.FS // embedded or filesystem UI
+	devMode bool
+	uiDir   string
+
 	authUser string // basic auth (empty = disabled)
 	authPass string
-	alerts   AlertConfig
 
 	// collectStaleAfter makes healthz fail when metrics stop arriving.
 	// Zero disables the check.
 	collectStaleAfter time.Duration
 	collectNodeID     string
 
-	alertsMu     sync.RWMutex
-	activeAlerts []Alert
+	stateInterval time.Duration
+	stateTrigger  chan struct{}
 }
 
 // NewServer creates a new API server.
-func NewServer(store *storage.DB, hub *Hub, uiFS fs.FS, devMode bool, uiDir string, auth string, alertCfg AlertConfig) *Server {
+func NewServer(opts Options) *Server {
 	s := &Server{
-		store:   store,
-		hub:     hub,
-		mux:     http.NewServeMux(),
-		uiFS:    uiFS,
-		devMode: devMode,
-		uiDir:   uiDir,
-		alerts:  alertCfg,
+		store:         opts.Store,
+		hub:           opts.Hub,
+		alerts:        opts.Alerts,
+		mux:           http.NewServeMux(),
+		uiFS:          opts.UIFS,
+		devMode:       opts.DevMode,
+		uiDir:         opts.UIDir,
+		stateInterval: opts.StateInterval,
+		stateTrigger:  make(chan struct{}, 1),
 	}
-	if auth != "" {
-		if parts := strings.SplitN(auth, ":", 2); len(parts) == 2 {
-			s.authUser = parts[0]
-			s.authPass = parts[1]
+	if s.stateInterval <= 0 {
+		s.stateInterval = defaultStateInterval
+	}
+
+	if opts.Auth != "" {
+		parts := strings.SplitN(opts.Auth, ":", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			// Silence here once left a deployment wide open: a value with no
+			// colon disabled authentication and said nothing about it.
+			log.Printf("warning: auth credentials must read user:password, authentication stays off")
+		} else {
+			s.authUser, s.authPass = parts[0], parts[1]
 			log.Printf("basic auth enabled for user %q", s.authUser)
 		}
 	}
+
+	if s.alerts != nil {
+		// Subscribed here rather than inside RunStateBroadcast so a change
+		// that lands before that goroutine starts still reaches it.
+		s.alerts.OnChange(s.notifyState)
+	}
+
 	s.routes()
 	return s
 }
@@ -85,6 +105,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/vllm/metrics", s.handleVLLMMetrics)
 	s.mux.HandleFunc("/api/v1/vllm/status", s.handleVLLMStatus)
 	s.mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
+	s.mux.HandleFunc("/api/v1/alerts/history", s.handleAlertHistory)
 	s.mux.HandleFunc("/api/v1/ws", s.hub.HandleWS)
 	s.mux.HandleFunc("/api/v1/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/metrics", s.handlePrometheus)
@@ -237,23 +258,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		procs = filterProcByNode(procs, nodeFilter)
 	}
 
-	// Check alerts against latest GPU metrics
-	s.checkAlerts(gpus)
-
-	s.alertsMu.RLock()
-	alerts := s.activeAlerts
-	s.alertsMu.RUnlock()
-
 	resp := map[string]any{
 		"nodes":     nodes,
 		"devices":   devices,
 		"gpus":      gpus,
 		"hosts":     hosts,
 		"processes": procs,
-		"alerts":    alerts,
-	}
-	if alerts == nil {
-		resp["alerts"] = []struct{}{}
+		"alerts":    s.openAlerts(),
 	}
 
 	// Include latest vLLM metrics if available
@@ -453,7 +464,9 @@ func (s *Server) handleIngestGPUMetrics(w http.ResponseWriter, r *http.Request) 
 	if len(metrics) > 0 {
 		nodeID := metrics[0].NodeID
 		s.store.UpdateNodeSeen(nodeID)
-		s.checkAlerts(metrics)
+		if s.alerts != nil {
+			s.alerts.Observe(metrics)
+		}
 
 		s.hub.Broadcast(collector.Snapshot{
 			Type:      "gpu_metrics",
@@ -615,50 +628,60 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 // --- Alerts ---
 
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
-	s.alertsMu.RLock()
-	alerts := s.activeAlerts
-	s.alertsMu.RUnlock()
+	cfg := alerts.Config{}
+	if s.alerts != nil {
+		cfg = s.alerts.Config()
+	}
 
-	resp := map[string]any{
+	writeJSON(w, map[string]any{
 		"config": map[string]int{
-			"temp_max": s.alerts.TempMax,
-			"gpu_util": s.alerts.GPUUtil,
-			"mem_util": s.alerts.MemUtil,
+			"temp_max": cfg.TempMax,
+			"gpu_util": cfg.GPUUtil,
+			"mem_util": cfg.MemUtil,
 		},
-		"alerts": alerts,
-	}
-	if alerts == nil {
-		resp["alerts"] = []struct{}{}
-	}
-	writeJSON(w, resp)
+		"alerts": s.openAlerts(),
+	})
 }
 
-// checkAlerts evaluates current GPU metrics against thresholds.
-func (s *Server) checkAlerts(gpus []collector.GPUMetrics) {
-	if s.alerts.TempMax == 0 && s.alerts.GPUUtil == 0 && s.alerts.MemUtil == 0 {
+// handleAlertHistory serves the journal, newest first.
+func (s *Server) handleAlertHistory(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+
+	events, err := s.store.ListAlertEvents(storage.AlertEventQuery{
+		From:   from,
+		To:     to,
+		NodeID: r.URL.Query().Get("node"),
+		Kind:   r.URL.Query().Get("kind"),
+		Limit:  limit,
+	})
+	if err != nil {
+		httpError(w, "list alert events: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	var alerts []Alert
-	for _, g := range gpus {
-		node := g.NodeID
-		if node == "" {
-			node = "local"
-		}
-		if s.alerts.TempMax > 0 && g.Temperature >= s.alerts.TempMax {
-			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "temperature", Value: float64(g.Temperature), Thresh: float64(s.alerts.TempMax)})
-		}
-		if s.alerts.GPUUtil > 0 && g.GPUUtil >= float64(s.alerts.GPUUtil) {
-			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "gpu_util", Value: g.GPUUtil, Thresh: float64(s.alerts.GPUUtil)})
-		}
-		if s.alerts.MemUtil > 0 && g.MemUtil >= float64(s.alerts.MemUtil) {
-			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "mem_util", Value: g.MemUtil, Thresh: float64(s.alerts.MemUtil)})
-		}
+	if events == nil {
+		events = []alerts.Event{}
 	}
+	writeJSON(w, events)
+}
 
-	s.alertsMu.Lock()
-	s.activeAlerts = alerts
-	s.alertsMu.Unlock()
+// openAlerts is what every caller means by "the alerts": the events open
+// right now, never nil so the JSON carries an empty array.
+func (s *Server) openAlerts() []alerts.Event {
+	if s.alerts == nil {
+		return []alerts.Event{}
+	}
+	open := s.alerts.Active()
+	if open == nil {
+		return []alerts.Event{}
+	}
+	return open
 }
 
 // --- Helpers ---

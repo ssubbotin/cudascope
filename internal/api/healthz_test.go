@@ -11,12 +11,12 @@ import (
 
 func newTestServer(t *testing.T) (*Server, *storage.DB) {
 	t.Helper()
-	db, err := storage.Open(t.TempDir())
+	db, err := storage.Open(t.TempDir(), storage.Options{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return NewServer(db, NewHub(), nil, false, "", "", AlertConfig{}), db
+	return NewServer(Options{Store: db, Hub: NewHub()}), db
 }
 
 func healthzCode(t *testing.T, s *Server) int {

@@ -25,14 +25,15 @@ func (db *DB) GetNodes() ([]collector.Node, error) {
 	defer rows.Close()
 
 	now := time.Now().Unix()
+	offlineAfter := int64(db.opts.NodeOfflineAfter.Seconds())
 	var nodes []collector.Node
 	for rows.Next() {
 		var n collector.Node
 		if err := rows.Scan(&n.NodeID, &n.Hostname, &n.GPUCount, &n.FirstSeen, &n.LastSeen); err != nil {
 			return nil, err
 		}
-		// Node is online if seen within last 60 seconds
-		n.Online = (now - n.LastSeen) < 60
+		// Online means the heartbeat is younger than the configured silence.
+		n.Online = (now - n.LastSeen) < offlineAfter
 		nodes = append(nodes, n)
 	}
 	return nodes, rows.Err()
@@ -174,7 +175,7 @@ func selectHostResolution(spanSec int64) (table, cols string) {
 
 // GetGPUProcesses returns current GPU processes (latest snapshot), optionally filtered by node.
 func (db *DB) GetGPUProcesses(gpuID int, nodeID string) ([]collector.GPUProcess, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 
 	var query string
 	var args []any
@@ -209,7 +210,7 @@ func (db *DB) GetGPUProcesses(gpuID int, nodeID string) ([]collector.GPUProcess,
 
 // GetLatestGPUMetrics returns the most recent metric for each GPU across all nodes.
 func (db *DB) GetLatestGPUMetrics() ([]collector.GPUMetrics, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 	rows, err := db.conn.Query(`
 		WITH latest AS (
 			SELECT ts, COALESCE(node_id, 'local') as node_id, gpu_id, gpu_util, mem_util, mem_used,
@@ -245,7 +246,7 @@ func (db *DB) GetLatestGPUMetrics() ([]collector.GPUMetrics, error) {
 
 // GetLatestHostMetrics returns the most recent host metrics (one per node).
 func (db *DB) GetLatestHostMetrics() ([]collector.HostMetrics, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 	rows, err := db.conn.Query(`
 		WITH latest AS (
 			SELECT ts, node_id, cpu_percent, mem_used, mem_total,
@@ -317,7 +318,7 @@ func (db *DB) ReadVLLMMetrics(nodeID string, from, to int64) ([]collector.VLLMMe
 
 // ReadLatestVLLMMetrics returns the most recent vLLM metrics for a node.
 func (db *DB) ReadLatestVLLMMetrics(nodeID string) (*collector.VLLMMetrics, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 
 	var query string
 	var args []any
@@ -350,19 +351,32 @@ func (db *DB) ReadLatestVLLMMetrics(nodeID string) (*collector.VLLMMetrics, erro
 	return &m, nil
 }
 
-// GetAllGPUProcesses returns the latest process snapshot across all GPUs and nodes.
+// GetAllGPUProcesses returns the newest process snapshot of every GPU on
+// every node.
+//
+// The snapshot is the rows of one collection tick, found per GPU through
+// MAX(ts). Taking the newest row of every PID seen inside the freshness
+// window instead would keep listing processes that have already exited,
+// with their memory still counted against the card, until the window rolled
+// past them.
 func (db *DB) GetAllGPUProcesses() ([]collector.GPUProcess, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 
 	rows, err := db.conn.Query(`
-		WITH latest AS (
-			SELECT ts, COALESCE(node_id, 'local') as node_id, gpu_id, pid, name, gpu_mem,
-				ROW_NUMBER() OVER (PARTITION BY COALESCE(node_id, 'local'), gpu_id, pid ORDER BY ts DESC) as rn
+		WITH ticks AS (
+			SELECT COALESCE(node_id, 'local') AS node_id, gpu_id, MAX(ts) AS ts
 			FROM gpu_processes
 			WHERE ts >= ?
+			GROUP BY COALESCE(node_id, 'local'), gpu_id
 		)
-		SELECT ts, node_id, gpu_id, pid, name, gpu_mem
-		FROM latest WHERE rn = 1 ORDER BY node_id, gpu_id, pid`, cutoff)
+		SELECT p.ts, COALESCE(p.node_id, 'local'), p.gpu_id, p.pid, p.name, p.gpu_mem
+		FROM gpu_processes p
+		JOIN ticks t
+			ON COALESCE(p.node_id, 'local') = t.node_id
+			AND p.gpu_id = t.gpu_id
+			AND p.ts = t.ts
+		WHERE p.ts >= ?
+		ORDER BY 2, p.gpu_id, p.pid`, cutoff, cutoff)
 	if err != nil {
 		return nil, err
 	}

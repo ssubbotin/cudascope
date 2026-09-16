@@ -20,6 +20,13 @@ type BroadcastSink interface {
 	Broadcast(snap Snapshot)
 }
 
+// AlertObserver evaluates samples against thresholds. It lives on the
+// collection path so that thresholds are checked on every reading, whether
+// or not anybody has the dashboard open.
+type AlertObserver interface {
+	Observe(metrics []GPUMetrics)
+}
+
 // gpuSource, hostSource and vllmSource are the metric sources the collector
 // drives. They exist so the loop can be tested without a GPU.
 type gpuSource interface {
@@ -42,6 +49,7 @@ type Collector struct {
 	vllm      vllmSource
 	storage   MetricSink
 	broadcast BroadcastSink
+	alerts    AlertObserver
 
 	gpuInterval  time.Duration
 	hostInterval time.Duration
@@ -62,6 +70,16 @@ func New(gpu *GPUCollector, host *HostCollector, storage MetricSink, broadcast B
 		gpuInterval:  gpuInterval,
 		hostInterval: hostInterval,
 	}
+}
+
+// SetAlerts configures threshold evaluation. Agent mode leaves it unset:
+// agents push raw samples and the hub, which holds the thresholds, judges
+// them.
+func (c *Collector) SetAlerts(observer AlertObserver) {
+	if observer == nil {
+		return
+	}
+	c.alerts = observer
 }
 
 // SetVLLM configures vLLM metrics collection.
@@ -141,6 +159,10 @@ func (c *Collector) collectGPU() {
 
 	if err := c.storage.WriteGPUMetrics(metrics); err != nil {
 		log.Printf("error writing GPU metrics: %v", err)
+	}
+
+	if c.alerts != nil {
+		c.alerts.Observe(metrics)
 	}
 
 	if c.broadcast != nil {

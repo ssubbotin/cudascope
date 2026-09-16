@@ -21,11 +21,15 @@ type Config struct {
 	Retention1h           time.Duration
 	DevMode               bool
 	UIDir                 string
-	Auth                  string // "user:password" for basic auth (empty = disabled)
-	AlertTempMax          int    // temperature alert threshold (°C, 0 = disabled)
-	AlertGPUUtil          int    // GPU utilization alert threshold (%, 0 = disabled)
-	AlertMemUtil          int    // memory utilization alert threshold (%, 0 = disabled)
-	VLLMUrl               string // vLLM metrics endpoint base URL (empty = disabled)
+	Auth                  string        // "user:password" for basic auth (empty = disabled)
+	AlertTempMax          int           // temperature alert threshold (°C, 0 = disabled)
+	AlertGPUUtil          int           // GPU utilization alert threshold (%, 0 = disabled)
+	AlertMemUtil          int           // memory utilization alert threshold (%, 0 = disabled)
+	AlertFor              time.Duration // how long a breach must hold before an alert opens
+	AlertClear            time.Duration // how long normality must hold before it closes
+	NodeOfflineAfter      time.Duration // heartbeat age at which a node counts as offline
+	RetentionAlerts       time.Duration // how long closed alert events are kept
+	VLLMUrl               string        // vLLM metrics endpoint base URL (empty = disabled)
 	VLLMInterval          time.Duration
 }
 
@@ -50,11 +54,26 @@ func Load() *Config {
 	flag.IntVar(&cfg.AlertTempMax, "alert-temp", envOrDefaultInt("CUDASCOPE_ALERT_TEMP", 0), "temperature alert threshold °C (0=disabled)")
 	flag.IntVar(&cfg.AlertGPUUtil, "alert-gpu-util", envOrDefaultInt("CUDASCOPE_ALERT_GPU_UTIL", 0), "GPU utilization alert threshold % (0=disabled)")
 	flag.IntVar(&cfg.AlertMemUtil, "alert-mem-util", envOrDefaultInt("CUDASCOPE_ALERT_MEM_UTIL", 0), "memory utilization alert threshold % (0=disabled)")
+	flag.DurationVar(&cfg.AlertFor, "alert-for", envOrDefaultDuration("CUDASCOPE_ALERT_FOR", 30*time.Second), "how long a threshold must be exceeded before an alert opens")
+	flag.DurationVar(&cfg.AlertClear, "alert-clear", envOrDefaultDuration("CUDASCOPE_ALERT_CLEAR", time.Minute), "how long a metric must be back to normal before an alert closes")
+	flag.DurationVar(&cfg.NodeOfflineAfter, "node-offline-after", envOrDefaultDuration("CUDASCOPE_NODE_OFFLINE_AFTER", time.Minute), "silence after which a node counts as offline and raises an alert")
+	flag.DurationVar(&cfg.RetentionAlerts, "retention-alerts", envOrDefaultDuration("CUDASCOPE_RETENTION_ALERTS", 90*24*time.Hour), "closed alert event retention")
 	flag.StringVar(&cfg.VLLMUrl, "vllm-url", envOrDefault("CUDASCOPE_VLLM_URL", ""), "vLLM metrics endpoint base URL (empty=disabled)")
 	flag.DurationVar(&cfg.VLLMInterval, "vllm-interval", envOrDefaultDuration("CUDASCOPE_VLLM_INTERVAL", 5*time.Second), "vLLM metrics collection interval")
 
 	flag.Parse()
 	return cfg
+}
+
+// FreshWindow is how old the newest sample may be and still count as
+// current. It follows the collection interval: a window fixed at 30 seconds
+// made --collect-interval 60s produce an empty dashboard.
+func (c *Config) FreshWindow() time.Duration {
+	window := 5 * c.CollectInterval
+	if window < 30*time.Second {
+		window = 30 * time.Second
+	}
+	return window
 }
 
 func envOrDefault(key, def string) string {

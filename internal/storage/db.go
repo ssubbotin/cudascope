@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -30,14 +31,50 @@ var migration005 string
 //go:embed migrations/006_alert_events.sql
 var migration006 string
 
+// Options tunes the queries whose answer depends on how often this
+// deployment collects.
+type Options struct {
+	// FreshWindow is how old the newest sample may be and still count as
+	// current. It follows the collection interval, because a hardcoded
+	// window silently empties the dashboard for anyone who collects more
+	// slowly than the author assumed.
+	FreshWindow time.Duration
+
+	// NodeOfflineAfter is the heartbeat age at which a node stops counting
+	// as online. The alert engine reads the same setting, so the dot in the
+	// node list and the node_silent event agree by construction.
+	NodeOfflineAfter time.Duration
+}
+
+const (
+	defaultFreshWindow      = 30 * time.Second
+	defaultNodeOfflineAfter = 60 * time.Second
+)
+
+func (o Options) withDefaults() Options {
+	if o.FreshWindow <= 0 {
+		o.FreshWindow = defaultFreshWindow
+	}
+	if o.NodeOfflineAfter <= 0 {
+		o.NodeOfflineAfter = defaultNodeOfflineAfter
+	}
+	return o
+}
+
 // DB wraps a SQLite connection with metrics-specific operations.
 type DB struct {
 	conn *sql.DB
 	mu   sync.Mutex // serialize writes
+	opts Options
+}
+
+// freshCutoff is the oldest timestamp a "latest" query accepts.
+func (db *DB) freshCutoff() int64 {
+	return time.Now().Add(-db.opts.FreshWindow).Unix()
 }
 
 // Open creates or opens the SQLite database.
-func Open(dataDir string) (*DB, error) {
+func Open(dataDir string, opts Options) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
@@ -51,7 +88,7 @@ func Open(dataDir string) (*DB, error) {
 	// Single writer connection for SQLite
 	conn.SetMaxOpenConns(1)
 
-	db := &DB{conn: conn}
+	db := &DB{conn: conn, opts: opts.withDefaults()}
 	if err := db.migrate(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
