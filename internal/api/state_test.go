@@ -211,3 +211,46 @@ func TestIngestedMetricsAreEvaluated(t *testing.T) {
 func hotSampleFor(node string) []collector.GPUMetrics {
 	return []collector.GPUMetrics{{NodeID: node, GPUID: 0, Temperature: 95, Timestamp: time.Now().Unix()}}
 }
+
+// An Xid reaches the hub over its own route, because it is an event the
+// driver raised rather than a sample anybody took.
+func TestAnAgentsXidLandsInTheJournal(t *testing.T) {
+	srv, db, engine := newAlertServer(t, alerts.Config{TempMax: 80, Clear: time.Minute}, time.Hour)
+
+	body := `{"node_id":"gpu-node-1","gpu_id":1,"xid":79}`
+	req := httptest.NewRequest("POST", "/api/v1/ingest/xid", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	active := engine.Active()
+	if len(active) != 1 || active[0].Kind != alerts.KindXid {
+		t.Fatalf("want an open Xid event, got %+v", active)
+	}
+	if active[0].LastValue != 79 {
+		t.Fatalf("want the code kept, got %v", active[0].LastValue)
+	}
+
+	events, err := db.ListAlertEvents(storage.AlertEventQuery{
+		From: time.Now().Unix() - 60, To: time.Now().Unix() + 60, Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(events) != 1 || events[0].NodeID != "gpu-node-1" {
+		t.Fatalf("the journal does not hold the fault: %+v", events)
+	}
+}
+
+func TestXidIngestNeedsANode(t *testing.T) {
+	srv, _, _ := newAlertServer(t, alerts.Config{}, time.Hour)
+
+	req := httptest.NewRequest("POST", "/api/v1/ingest/xid", bytes.NewReader([]byte(`{"gpu_id":0,"xid":13}`)))
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}

@@ -27,6 +27,11 @@ const (
 	KindMemUtil          Kind = "mem_util"
 	KindNodeSilent       Kind = "node_silent"
 	KindCollectorStalled Kind = "collector_stalled"
+
+	// KindXid is a driver fault reported by NVML as an event rather than a
+	// reading. PeakValue counts the errors in the burst, LastValue is the
+	// newest code.
+	KindXid Kind = "xid"
 )
 
 // nodeLevel is the GPU slot of an event that belongs to a whole node.
@@ -101,6 +106,7 @@ type candidate struct {
 	breachSince time.Time // zero when the value is below the threshold
 	clearSince  time.Time // zero unless an open event is clearing
 	lastPersist time.Time
+	lastNote    time.Time // when an event-driven kind last heard anything
 }
 
 // Engine evaluates samples and keeps the open events.
@@ -187,6 +193,8 @@ func (e *Engine) enabled(k Kind) bool {
 		return e.cfg.NodeOfflineAfter > 0
 	case KindCollectorStalled:
 		return e.cfg.LocalNodeID != "" && e.cfg.CollectStaleAfter > 0
+	case KindXid:
+		return true // a driver fault is worth recording whatever is configured
 	}
 	return false
 }
@@ -228,6 +236,53 @@ func (e *Engine) Observe(metrics []collector.GPUMetrics) {
 	}
 }
 
+// NoteXid records a driver fault on one card. The event stays open while
+// errors keep arriving and closes once the card has been quiet for Clear, so
+// a burst is one journal entry with a count rather than a hundred.
+func (e *Engine) NoteXid(nodeID string, gpuID int, xid uint64) {
+	now := e.now()
+	k := key{node: nodeID, gpu: gpuID, kind: KindXid}
+
+	e.mu.Lock()
+	c := e.cands[k]
+	opened := false
+
+	if c == nil || !c.open {
+		c = &candidate{
+			ev: Event{
+				NodeID:    nodeID,
+				GPUID:     &gpuID,
+				Kind:      KindXid,
+				StartedAt: now.Unix(),
+				PeakValue: 1,
+				LastValue: float64(xid),
+			},
+			open:        true,
+			lastPersist: now,
+			lastNote:    now,
+		}
+		e.cands[k] = c
+		opened = true
+
+		if id, err := e.store.OpenAlertEvent(c.ev); err != nil {
+			log.Printf("alerts: record xid %d on %s gpu %d: %v", xid, nodeID, gpuID, err)
+		} else {
+			c.ev.ID = id
+		}
+		log.Printf("alerts: Xid %d on %s gpu %d", xid, nodeID, gpuID)
+	} else {
+		c.ev.PeakValue++
+		c.ev.LastValue = float64(xid)
+		c.lastNote = now
+		e.persist(c, now)
+	}
+	e.mu.Unlock()
+
+	if opened {
+		e.announce()
+	}
+}
+
 // Sweep raises the events that no incoming sample can raise: a node that
 // stopped reporting, and local collection that stopped producing.
 func (e *Engine) Sweep() {
@@ -261,6 +316,25 @@ func (e *Engine) Sweep() {
 		}
 		e.mu.Unlock()
 	}
+
+	// Xid events close themselves once the card has been quiet.
+	e.mu.Lock()
+	for k, c := range e.cands {
+		if k.kind != KindXid || !c.open {
+			continue
+		}
+		if now.Sub(c.lastNote) < e.cfg.Clear {
+			continue
+		}
+		if c.ev.ID != 0 {
+			if err := e.store.CloseAlertEvent(c.ev.ID, now.Unix(), c.ev.LastValue, c.ev.PeakValue); err != nil {
+				log.Printf("alerts: close xid on %s: %v", k.node, err)
+			}
+		}
+		delete(e.cands, k)
+		changed = true
+	}
+	e.mu.Unlock()
 
 	if e.cfg.LocalNodeID != "" && e.cfg.CollectStaleAfter > 0 {
 		ts, err := e.store.LatestGPUMetricTs(e.cfg.LocalNodeID)

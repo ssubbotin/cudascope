@@ -9,6 +9,7 @@ docker run -d --gpus all -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascop
 Then open [http://localhost:9090](http://localhost:9090).
 
 - **Direct NVML access** via [go-nvml](https://github.com/NVIDIA/go-nvml) - no nvidia-smi parsing
+- **Throttle reasons, ECC counters and Xid faults** - why a card slowed down, and when the driver reported a fault
 - **vLLM integration** - scrapes vLLM `/metrics` for tok/s, KV cache, latency, active model
 - **Embedded storage** - SQLite with automatic rollup retention (raw 1s -> 1m -> 1h)
 - **Single binary** - Go backend with embedded Svelte 5 SPA (go:embed)
@@ -107,6 +108,8 @@ Click any GPU card for full-screen charts:
 - PCIe throughput (TX/RX KB/s)
 - Encoder / decoder utilization
 - Process list
+- Health panel: why the clocks are being held back, and lifetime ECC counters
+  on the cards that report them
 
 All charts support synchronized crosshairs and configurable time ranges.
 
@@ -144,6 +147,7 @@ mode. Nothing has to be watching for an alert to fire or to be recorded.
 | `mem_util` | Memory utilization at or above `--alert-mem-util` |
 | `node_silent` | A node with registered GPUs has not reported for `--node-offline-after` |
 | `collector_stalled` | Standalone only: local collection is older than `--collect-stale-after` |
+| `xid` | The driver reported an Xid fault on a card. A burst is one entry with a count and the newest code |
 
 ### vLLM Integration
 
@@ -178,7 +182,10 @@ Expose metrics for existing monitoring stacks:
 GET /metrics
 ```
 
-Returns all GPU and host metrics in Prometheus text exposition format with labels `node_id`, `gpu_id`, `gpu_name`.
+Returns all GPU and host metrics in Prometheus text exposition format with
+labels `node_id`, `gpu_id`, `gpu_name`, including `cudascope_gpu_throttled`,
+`cudascope_gpu_throttle_reasons` and the two ECC counters. Label values are
+escaped, so a card with a quote in its name cannot break the exposition.
 
 ### Authentication
 

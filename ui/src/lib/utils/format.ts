@@ -47,7 +47,8 @@ const alertNames: Record<string, string> = {
 	gpu_util: 'GPU utilization',
 	mem_util: 'Memory utilization',
 	node_silent: 'Node silent',
-	collector_stalled: 'Collection stalled'
+	collector_stalled: 'Collection stalled',
+	xid: 'Driver fault (Xid)'
 };
 
 export function alertName(kind: string): string {
@@ -61,6 +62,29 @@ export function alertValue(kind: string, value: number): string {
 	}
 	if (kind === 'temperature') return formatTemp(Math.round(value));
 	return value.toFixed(0) + '%';
+}
+
+// alertSummary states an event in one line. Each kind means something
+// different by its numbers: a threshold breach carries a reading, a silence
+// carries an age, and a driver fault carries a code and a count.
+export function alertSummary(
+	kind: string,
+	last: number,
+	peak: number,
+	threshold: number
+): string {
+	if (kind === 'xid') {
+		return `code ${last}, ${peak} error${peak === 1 ? '' : 's'}`;
+	}
+	if (kind === 'node_silent' || kind === 'collector_stalled') {
+		return `silent for ${formatDuration(last)}, threshold ${formatDuration(threshold)}`;
+	}
+	return `now ${alertValue(kind, last)}, peak ${alertValue(kind, peak)}, threshold ${alertValue(kind, threshold)}`;
+}
+
+export function alertPeak(kind: string, peak: number): string {
+	if (kind === 'xid') return `${peak} error${peak === 1 ? '' : 's'}`;
+	return alertValue(kind, peak);
 }
 
 export function formatDuration(seconds: number): string {

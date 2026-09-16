@@ -133,6 +133,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/ingest/host-metrics", s.handleIngestHostMetrics)
 	s.mux.HandleFunc("/api/v1/ingest/gpu-processes", s.handleIngestGPUProcesses)
 	s.mux.HandleFunc("/api/v1/ingest/vllm-metrics", s.handleIngestVLLMMetrics)
+	s.mux.HandleFunc("/api/v1/ingest/xid", s.handleIngestXid)
 
 	// Serve UI
 	if s.devMode {
@@ -649,6 +650,36 @@ func (s *Server) handleIngestVLLMMetrics(w http.ResponseWriter, r *http.Request)
 		Timestamp: time.Now().Unix(),
 		VLLM:      &m,
 	})
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleIngestXid records a driver fault reported by an agent. Xid errors
+// arrive as events rather than samples, so they take their own route.
+func (s *Server) handleIngestXid(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		NodeID string `json:"node_id"`
+		GPUID  int    `json:"gpu_id"`
+		Xid    uint64 `json:"xid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		httpError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if payload.NodeID == "" {
+		httpError(w, "node_id required", http.StatusBadRequest)
+		return
+	}
+
+	s.store.UpdateNodeSeen(payload.NodeID)
+	if s.alerts != nil {
+		s.alerts.NoteXid(payload.NodeID, payload.GPUID, payload.Xid)
+	}
 
 	w.WriteHeader(http.StatusOK)
 }

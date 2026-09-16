@@ -4,7 +4,7 @@
 	import NodeSelector from '$lib/components/NodeSelector.svelte';
 	import { alerts, nodes, selectedNode, fetchAlertHistory } from '$lib/stores/metrics';
 	import type { AlertEvent } from '$lib/stores/metrics';
-	import { alertName, alertValue, formatDuration, formatClock } from '$lib/utils/format';
+	import { alertName, alertValue, alertSummary, alertPeak, formatDuration, formatClock } from '$lib/utils/format';
 
 	let selectedRange = $state('24h');
 	let autoRefresh = $state(true);
@@ -107,9 +107,7 @@
 						<span class="text-sm font-medium text-red">{alertName(event.kind)}</span>
 						<span class="text-sm text-text-primary">{target(event)}</span>
 						<span class="text-xs text-text-muted">
-							now {alertValue(event.kind, event.last_value)}, peak
-							{alertValue(event.kind, event.peak_value)}, threshold
-							{alertValue(event.kind, event.threshold)}
+							{alertSummary(event.kind, event.last_value, event.peak_value, event.threshold)}
 						</span>
 						<span class="text-xs text-text-muted ml-auto">
 							{formatClock(event.started_at)} · {duration(event)}
@@ -148,7 +146,7 @@
 								<td class="px-4 py-2 text-text-primary">{alertName(event.kind)}</td>
 								<td class="px-4 py-2 text-text-secondary">{target(event)}</td>
 								<td class="px-4 py-2 text-right text-text-secondary"
-									>{alertValue(event.kind, event.peak_value)}</td
+									>{alertPeak(event.kind, event.peak_value)}</td
 								>
 								<td class="px-4 py-2 text-right text-text-muted"
 									>{alertValue(event.kind, event.threshold)}</td

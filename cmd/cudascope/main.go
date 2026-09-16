@@ -125,6 +125,9 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 	enableVLLM(col, cfg, localNodeID)
 
 	go col.Run(ctx)
+	watchXid(ctx, gpuCol, func(gpuID int, xid uint64) {
+		engine.NoteXid(localNodeID, gpuID, xid)
+	})
 
 	// Collection that wedges cannot be unstuck from inside: an NVML call is a
 	// cgo call with no timeout. Exit instead and let the restart policy work.
@@ -231,6 +234,14 @@ func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config
 	enableVLLM(col, cfg, nodeID)
 	go col.Run(ctx)
 
+	// The hub holds the journal, so an agent forwards what the driver tells
+	// it rather than judging it here.
+	watchXid(ctx, gpuCol, func(gpuID int, xid uint64) {
+		if err := agentSink.WriteXid(gpuID, xid); err != nil {
+			log.Printf("could not report Xid %d on GPU %d: %v", xid, gpuID, err)
+		}
+	})
+
 	// Minimal health endpoint for Docker healthcheck
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -288,6 +299,18 @@ func enableVLLM(col *collector.Collector, cfg *config.Config, nodeID string) {
 	}
 	col.SetVLLM(collector.NewVLLMCollector(cfg.VLLMUrl, nodeID), cfg.VLLMInterval)
 	log.Printf("vLLM metrics collection enabled: %s (interval=%s)", cfg.VLLMUrl, cfg.VLLMInterval)
+}
+
+// watchXid starts the Xid event loop when the driver allows it. A driver
+// that refuses registration is worth one line in the log and nothing more:
+// every other metric still works.
+func watchXid(ctx context.Context, gpuCol *collector.GPUCollector, onXid func(gpuID int, xid uint64)) {
+	watcher, err := gpuCol.WatchXid()
+	if err != nil {
+		log.Printf("Xid errors are not being watched: %v", err)
+		return
+	}
+	go watcher.Run(ctx, onXid)
 }
 
 // storageOptions ties the queries that answer "what is current" to how

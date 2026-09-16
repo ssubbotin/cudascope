@@ -146,6 +146,16 @@ func (a *Agent) WriteVLLMMetrics(m *collector.VLLMMetrics) error {
 	return a.post("/api/v1/ingest/vllm-metrics", m)
 }
 
+// WriteXid reports a driver fault to the hub, where the thresholds and the
+// journal live.
+func (a *Agent) WriteXid(gpuID int, xid uint64) error {
+	return a.post("/api/v1/ingest/xid", map[string]any{
+		"node_id": a.nodeID,
+		"gpu_id":  gpuID,
+		"xid":     xid,
+	})
+}
+
 // post queues a payload and tries to drain the queue.
 //
 // Queuing before sending is what keeps a hub restart from punching a hole in

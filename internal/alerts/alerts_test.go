@@ -512,3 +512,88 @@ func TestRestoreClosesEventsOfADisabledKind(t *testing.T) {
 		t.Fatal("the stranded event was not closed in the store")
 	}
 }
+
+// An Xid is how the driver says a card just had a fault. It arrives as an
+// event rather than a reading, so it has no threshold to cross: the journal
+// entry opens on the first one and closes once the card has been quiet.
+func TestAnXidOpensAnEventAndQuietClosesIt(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(testConfig(), store, c.now)
+
+	e.NoteXid("local", 0, 79)
+
+	active := e.Active()
+	if len(active) != 1 {
+		t.Fatalf("want one event, got %d", len(active))
+	}
+	if active[0].Kind != KindXid {
+		t.Fatalf("unexpected kind: %+v", active[0])
+	}
+	if active[0].LastValue != 79 {
+		t.Fatalf("want the Xid code kept, got %v", active[0].LastValue)
+	}
+	if active[0].GPUID == nil || *active[0].GPUID != 0 {
+		t.Fatalf("want the event tied to the card: %+v", active[0])
+	}
+	if store.openCount() != 1 {
+		t.Fatalf("the Xid was not recorded: %d rows", store.openCount())
+	}
+
+	// Still within the quiet period.
+	c.advance(30 * time.Second)
+	e.Sweep()
+	if len(e.Active()) != 1 {
+		t.Fatal("the event closed while the card was still inside the quiet window")
+	}
+
+	c.advance(31 * time.Second)
+	e.Sweep()
+	if got := len(e.Active()); got != 0 {
+		t.Fatalf("the event stayed open after a quiet minute: %d", got)
+	}
+	if store.closedCount() != 1 {
+		t.Fatalf("the event was not closed in the store: %d", store.closedCount())
+	}
+}
+
+// A card in trouble emits Xids in bursts. One journal entry counting them
+// beats a hundred entries nobody reads.
+func TestRepeatedXidsStayOneEventAndAreCounted(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(testConfig(), store, c.now)
+
+	e.NoteXid("local", 0, 13)
+	c.advance(10 * time.Second)
+	e.NoteXid("local", 0, 31)
+	c.advance(10 * time.Second)
+	e.NoteXid("local", 0, 31)
+
+	active := e.Active()
+	if len(active) != 1 {
+		t.Fatalf("want one event, got %d", len(active))
+	}
+	if active[0].PeakValue != 3 {
+		t.Fatalf("want three errors counted, got %v", active[0].PeakValue)
+	}
+	if active[0].LastValue != 31 {
+		t.Fatalf("want the newest code, got %v", active[0].LastValue)
+	}
+	if store.openCount() != 1 {
+		t.Fatalf("a burst opened %d events", store.openCount())
+	}
+}
+
+func TestXidsOnDifferentCardsAreDifferentEvents(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(testConfig(), store, c.now)
+
+	e.NoteXid("local", 0, 79)
+	e.NoteXid("local", 1, 79)
+
+	if got := len(e.Active()); got != 2 {
+		t.Fatalf("want an event per card, got %d", got)
+	}
+	if store.openCount() != 2 {
+		t.Fatalf("want two rows, got %d", store.openCount())
+	}
+}
