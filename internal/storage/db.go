@@ -27,6 +27,9 @@ var migration004 string
 //go:embed migrations/005_vllm.sql
 var migration005 string
 
+//go:embed migrations/006_alert_events.sql
+var migration006 string
+
 // DB wraps a SQLite connection with metrics-specific operations.
 type DB struct {
 	conn *sql.DB
@@ -101,6 +104,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 005: %w", err)
 		}
 		log.Println("applied migration 005 (vllm metrics)")
+	}
+
+	if version < 6 {
+		if _, err := db.conn.Exec(migration006); err != nil {
+			return fmt.Errorf("migration 006: %w", err)
+		}
+		log.Println("applied migration 006 (alert events)")
 	}
 
 	return nil

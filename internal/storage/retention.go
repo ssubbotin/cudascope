@@ -11,6 +11,11 @@ type RetentionConfig struct {
 	Raw time.Duration
 	M1  time.Duration
 	H1  time.Duration
+
+	// Alerts bounds the journal of closed alert events. Zero keeps them for
+	// ever. Open events are never pruned: an alert that has been firing for
+	// longer than the window is the last one anybody wants deleted.
+	Alerts time.Duration
 }
 
 // RunRetention starts the background retention/rollup loop.
@@ -53,6 +58,26 @@ func (db *DB) doRetention(cfg RetentionConfig) {
 	db.prune("host_metrics_1m", m1Cutoff)
 	db.prune("host_metrics_1h", h1Cutoff)
 	db.prune("gpu_processes", rawCutoff)
+
+	if cfg.Alerts > 0 {
+		db.pruneAlertEvents(now - int64(cfg.Alerts.Seconds()))
+	}
+}
+
+// pruneAlertEvents removes closed events that ended before the cutoff.
+func (db *DB) pruneAlertEvents(beforeTs int64) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	result, err := db.conn.Exec(
+		`DELETE FROM alert_events WHERE ended_at IS NOT NULL AND ended_at < ?`, beforeTs)
+	if err != nil {
+		log.Printf("prune alert_events error: %v", err)
+		return
+	}
+	if rows, _ := result.RowsAffected(); rows > 0 {
+		log.Printf("pruned %d rows from alert_events", rows)
+	}
 }
 
 func (db *DB) rollupGPUTo1m(beforeTs int64) {
