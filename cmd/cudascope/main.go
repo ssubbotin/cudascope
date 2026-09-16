@@ -235,7 +235,9 @@ func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		// The queue depth is the one number that says whether this agent is
+		// reaching its hub.
+		fmt.Fprintf(w, "ok, %d payload(s) queued for the hub\n", agentSink.Pending())
 	})
 	httpSrv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Port),

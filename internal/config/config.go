@@ -59,8 +59,8 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Auth != "" {
-		user, _, ok := strings.Cut(c.Auth, ":")
-		if !ok || user == "" {
+		user, pass, ok := strings.Cut(c.Auth, ":")
+		if !ok || user == "" || pass == "" {
 			// Silence here once left a deployment open: a value with no colon
 			// disabled authentication and said nothing about it.
 			return fmt.Errorf("auth credentials must read user:password")

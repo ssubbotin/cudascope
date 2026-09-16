@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sergey/cudascope/internal/alerts"
@@ -66,6 +67,9 @@ type Server struct {
 
 	stateInterval time.Duration
 	stateTrigger  chan struct{}
+
+	refusedMu sync.Mutex
+	refusedAt time.Time
 }
 
 // NewServer creates a new API server.
@@ -199,6 +203,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 
 		case strings.HasPrefix(path, "/api/v1/ingest/"):
 			if !s.ingestAllowed(r) {
+				s.reportIngestRefused(r)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -228,6 +233,23 @@ func (s *Server) ingestAllowed(r *http.Request) bool {
 		return s.basicAuthOK(r)
 	}
 	return true
+}
+
+// reportIngestRefused logs a turned-away agent, at most once a minute.
+//
+// An upgrade that starts requiring credentials on routes that never needed
+// them stops metrics arriving, and without this the hub would show a node
+// quietly going offline with nothing anywhere to explain it.
+func (s *Server) reportIngestRefused(r *http.Request) {
+	s.refusedMu.Lock()
+	defer s.refusedMu.Unlock()
+
+	if time.Since(s.refusedAt) < time.Minute {
+		return
+	}
+	s.refusedAt = time.Now()
+	log.Printf("refused ingest from %s: credentials missing or wrong (agents need --ingest-token or the --auth credentials)",
+		r.RemoteAddr)
 }
 
 func (s *Server) basicAuthOK(r *http.Request) bool {

@@ -209,6 +209,11 @@ With no token set, a hub that has `CUDASCOPE_AUTH` accepts the same
 credentials on the ingest routes, and a hub with neither logs a warning that
 its ingest is open to anything that can reach the port.
 
+**Upgrading a hub that already set `CUDASCOPE_AUTH`:** its ingest routes now
+require those credentials, so give the agents the same `CUDASCOPE_AUTH` or an
+`CUDASCOPE_INGEST_TOKEN`. A hub that turns an agent away logs it, and the agent
+buffers its samples until it is accepted.
+
 Cross-origin requests are refused unless `CUDASCOPE_CORS_ORIGIN` names an
 origin. The dashboard is served by the same process, so it needs none.
 

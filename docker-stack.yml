@@ -9,6 +9,9 @@ services:
       # Set this to the vLLM server on the same node to have the agent scrape
       # it and push the numbers to the hub. Empty means no vLLM collection.
       - CUDASCOPE_VLLM_URL=${CUDASCOPE_VLLM_URL-}
+      # Shared with the hub below. Without it the hub accepts metrics from
+      # anything that can reach it on the overlay network.
+      - CUDASCOPE_INGEST_TOKEN=${CUDASCOPE_INGEST_TOKEN-}
     deploy:
       mode: global
       placement:
@@ -40,6 +43,7 @@ services:
           - node.role == manager
     environment:
       - CUDASCOPE_DATA_DIR=/data
+      - CUDASCOPE_INGEST_TOKEN=${CUDASCOPE_INGEST_TOKEN-}
     networks:
       - cudascope
 
