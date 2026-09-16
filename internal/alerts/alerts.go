@@ -51,13 +51,20 @@ type Event struct {
 	LastValue float64 `json:"last_value"`
 }
 
+// NodeHeartbeat is what the engine needs to judge a node's silence.
+type NodeHeartbeat struct {
+	NodeID   string
+	LastSeen int64
+	GPUCount int
+}
+
 // Store is the slice of storage the engine needs.
 type Store interface {
 	OpenAlertEvent(e Event) (int64, error)
 	UpdateAlertEvent(id int64, last, peak float64) error
 	CloseAlertEvent(id, endedAt int64, last, peak float64) error
 	OpenAlertEvents() ([]Event, error)
-	NodeLastSeen() (map[string]int64, error)
+	NodeHeartbeats() ([]NodeHeartbeat, error)
 	LatestGPUMetricTs(nodeID string) (int64, error)
 }
 
@@ -198,16 +205,23 @@ func (e *Engine) Sweep() {
 	now := e.now()
 	changed := false
 
-	if seen, err := e.store.NodeLastSeen(); err != nil {
+	if seen, err := e.store.NodeHeartbeats(); err != nil {
 		log.Printf("alerts: read node heartbeats: %v", err)
 	} else if e.cfg.NodeOfflineAfter > 0 {
 		e.mu.Lock()
-		for node, ts := range seen {
-			if ts <= 0 {
+		for _, n := range seen {
+			if n.LastSeen <= 0 {
 				continue
 			}
-			k := key{node: node, gpu: nodeLevel, kind: KindNodeSilent}
-			age := float64(now.Unix() - ts)
+			if n.GPUCount == 0 {
+				// A node with no registered GPU has nothing to report and
+				// nothing to be silent about. The row migration 003 creates
+				// for standalone mode is exactly that on a hub, and it used
+				// to raise an alert about a node that does not exist.
+				continue
+			}
+			k := key{node: n.NodeID, gpu: nodeLevel, kind: KindNodeSilent}
+			age := float64(now.Unix() - n.LastSeen)
 			changed = e.evaluate(k, age, e.cfg.NodeOfflineAfter.Seconds(), now, 0, 0) || changed
 		}
 		e.mu.Unlock()

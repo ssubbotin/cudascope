@@ -41,6 +41,7 @@ type fakeStore struct {
 
 	restore  []Event
 	lastSeen map[string]int64
+	noGPUs   map[string]bool
 	latestTs map[string]int64
 
 	openErr error
@@ -50,6 +51,7 @@ func newStore() *fakeStore {
 	return &fakeStore{
 		closedAt: make(map[int64]int64),
 		lastSeen: make(map[string]int64),
+		noGPUs:   make(map[string]bool),
 		latestTs: make(map[string]int64),
 	}
 }
@@ -86,12 +88,16 @@ func (s *fakeStore) OpenAlertEvents() ([]Event, error) {
 	return s.restore, nil
 }
 
-func (s *fakeStore) NodeLastSeen() (map[string]int64, error) {
+func (s *fakeStore) NodeHeartbeats() ([]NodeHeartbeat, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make(map[string]int64, len(s.lastSeen))
-	for k, v := range s.lastSeen {
-		out[k] = v
+	out := make([]NodeHeartbeat, 0, len(s.lastSeen))
+	for node, ts := range s.lastSeen {
+		gpus := 1
+		if s.noGPUs[node] {
+			gpus = 0
+		}
+		out = append(out, NodeHeartbeat{NodeID: node, LastSeen: ts, GPUCount: gpus})
 	}
 	return out, nil
 }
@@ -430,5 +436,25 @@ func openEvent(t *testing.T, e *Engine, c *clock) {
 	e.Observe(sample(85))
 	if len(e.Active()) != 1 {
 		t.Fatalf("setup: want 1 active event, got %d", len(e.Active()))
+	}
+}
+
+// A hub inherits a "local" row from the standalone migration and has no
+// local collector. Alerting about that node meant every hub reported a
+// silent node it never had.
+func TestANodeWithNoRegisteredGPUsIsNotWatched(t *testing.T) {
+	c, store := newClock(), newStore()
+	cfg := testConfig()
+	cfg.LocalNodeID = ""
+	e := New(cfg, store, c.now)
+
+	store.lastSeen["local"] = c.now().Unix()
+	store.noGPUs["local"] = true
+
+	c.advance(10 * time.Minute)
+	e.Sweep()
+
+	if got := len(e.Active()); got != 0 {
+		t.Fatalf("a node with no GPUs raised %d events", got)
 	}
 }

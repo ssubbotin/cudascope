@@ -225,20 +225,30 @@ func TestRetentionKeepsOpenAlertEvents(t *testing.T) {
 	}
 }
 
-func TestNodeLastSeenReportsEveryNode(t *testing.T) {
+func TestNodeHeartbeatsReportEveryNodeWithItsGPUCount(t *testing.T) {
 	db := openTestDB(t)
 	if err := db.RegisterNode("gpu-node-1", "gpu-node-1", 4); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
-	seen, err := db.NodeLastSeen()
+	seen, err := db.NodeHeartbeats()
 	if err != nil {
-		t.Fatalf("node last seen: %v", err)
+		t.Fatalf("node heartbeats: %v", err)
 	}
-	if _, ok := seen["local"]; !ok {
-		t.Fatalf("local node missing from %v", seen)
+
+	byNode := make(map[string]alerts.NodeHeartbeat, len(seen))
+	for _, n := range seen {
+		byNode[n.NodeID] = n
 	}
-	if ts, ok := seen["gpu-node-1"]; !ok || ts == 0 {
-		t.Fatalf("registered node missing or never seen: %v", seen)
+
+	if _, ok := byNode["local"]; !ok {
+		t.Fatalf("local node missing from %+v", seen)
+	}
+	agent, ok := byNode["gpu-node-1"]
+	if !ok || agent.LastSeen == 0 {
+		t.Fatalf("registered node missing or never seen: %+v", seen)
+	}
+	if agent.GPUCount != 4 {
+		t.Fatalf("gpu count = %d, want 4", agent.GPUCount)
 	}
 }

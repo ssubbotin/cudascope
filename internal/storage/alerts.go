@@ -98,24 +98,23 @@ func (db *DB) ListAlertEvents(q AlertEventQuery) ([]alerts.Event, error) {
 	return scanAlertEvents(rows)
 }
 
-// NodeLastSeen returns the heartbeat of every known node.
-func (db *DB) NodeLastSeen() (map[string]int64, error) {
-	rows, err := db.conn.Query(`SELECT node_id, last_seen FROM nodes`)
+// NodeHeartbeats returns the heartbeat of every known node.
+func (db *DB) NodeHeartbeats() ([]alerts.NodeHeartbeat, error) {
+	rows, err := db.conn.Query(`SELECT node_id, last_seen, gpu_count FROM nodes ORDER BY node_id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	seen := make(map[string]int64)
+	var out []alerts.NodeHeartbeat
 	for rows.Next() {
-		var node string
-		var ts int64
-		if err := rows.Scan(&node, &ts); err != nil {
+		var n alerts.NodeHeartbeat
+		if err := rows.Scan(&n.NodeID, &n.LastSeen, &n.GPUCount); err != nil {
 			return nil, err
 		}
-		seen[node] = ts
+		out = append(out, n)
 	}
-	return seen, rows.Err()
+	return out, rows.Err()
 }
 
 func scanAlertEvents(rows *sql.Rows) ([]alerts.Event, error) {
