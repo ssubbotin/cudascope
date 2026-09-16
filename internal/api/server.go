@@ -25,11 +25,11 @@ type AlertConfig struct {
 
 // Alert represents an active alert.
 type Alert struct {
-	NodeID  string `json:"node_id"`
-	GPUID   int    `json:"gpu_id"`
-	Metric  string `json:"metric"`  // "temperature", "gpu_util", "mem_util"
-	Value   float64 `json:"value"`
-	Thresh  float64 `json:"threshold"`
+	NodeID string  `json:"node_id"`
+	GPUID  int     `json:"gpu_id"`
+	Metric string  `json:"metric"` // "temperature", "gpu_util", "mem_util"
+	Value  float64 `json:"value"`
+	Thresh float64 `json:"threshold"`
 }
 
 // Server is the HTTP API server.
@@ -43,6 +43,10 @@ type Server struct {
 	authUser string // basic auth (empty = disabled)
 	authPass string
 	alerts   AlertConfig
+
+	// collectStaleAfter makes healthz fail when metrics stop arriving.
+	// Zero disables the check.
+	collectStaleAfter time.Duration
 
 	alertsMu     sync.RWMutex
 	activeAlerts []Alert
@@ -165,6 +169,22 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if s.collectStaleAfter > 0 {
+		ts, err := s.store.LatestGPUMetricTs()
+		if err != nil {
+			httpError(w, "healthz: read latest metric: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		if ts == 0 {
+			httpError(w, "healthz: no GPU metrics collected yet", http.StatusServiceUnavailable)
+			return
+		}
+		if age := time.Since(time.Unix(ts, 0)); age > s.collectStaleAfter {
+			httpError(w, fmt.Sprintf("healthz: no GPU metrics for %s", age.Truncate(time.Second)), http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
@@ -381,8 +401,8 @@ func (s *Server) handleIngestRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload struct {
-		NodeID   string              `json:"node_id"`
-		Hostname string              `json:"hostname"`
+		NodeID   string                `json:"node_id"`
+		Hostname string                `json:"hostname"`
 		Devices  []collector.GPUDevice `json:"devices"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -716,4 +736,14 @@ func httpError(w http.ResponseWriter, msg string, code int) {
 func uiDirExists(dir string) bool {
 	info, err := os.Stat(dir)
 	return err == nil && info.IsDir()
+}
+
+// SetCollectorWatchdog makes /api/v1/healthz fail once the newest GPU metric
+// row is older than staleAfter. Zero disables the check.
+//
+// Without it healthz answers "ok" as long as the HTTP goroutine is alive,
+// which says nothing about collection: on 2026-09-16 the container reported
+// healthy for the whole hour its collector was stuck. Call before serving.
+func (s *Server) SetCollectorWatchdog(staleAfter time.Duration) {
+	s.collectStaleAfter = staleAfter
 }

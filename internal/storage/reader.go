@@ -378,3 +378,14 @@ func (db *DB) GetAllGPUProcesses() ([]collector.GPUProcess, error) {
 	}
 	return procs, rows.Err()
 }
+
+// LatestGPUMetricTs returns the timestamp of the newest raw GPU metric row,
+// or 0 when the table is empty. It is the cheapest honest answer to "is
+// anything still collecting?" — the ts index makes it a single lookup.
+func (db *DB) LatestGPUMetricTs() (int64, error) {
+	var ts sql.NullInt64
+	if err := db.conn.QueryRow(`SELECT MAX(ts) FROM gpu_metrics_raw`).Scan(&ts); err != nil {
+		return 0, err
+	}
+	return ts.Int64, nil
+}

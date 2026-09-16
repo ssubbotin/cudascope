@@ -124,6 +124,9 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 
 	// Start API server
 	server := newAPIServer(db, hub, cfg)
+	// Hub mode leaves this off: there the data freshness reports on the
+	// agents, not on this process.
+	server.SetCollectorWatchdog(cfg.CollectStaleAfter)
 	httpSrv := server.HTTPServer(cfg.Port)
 	go func() {
 		log.Printf("HTTP server listening on :%d", cfg.Port)
