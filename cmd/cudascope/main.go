@@ -118,7 +118,7 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 
 	// Collection that wedges cannot be unstuck from inside: an NVML call is a
 	// cgo call with no timeout. Exit instead and let the restart policy work.
-	go watchdog.Run(ctx, db, cfg.CollectStallExitAfter, func(age time.Duration) {
+	go watchdog.Run(ctx, db.LatestGPUMetricTs, cfg.CollectStallExitAfter, func(age time.Duration) {
 		log.Fatalf("no GPU metrics for %s, exiting so the supervisor restarts us", age.Truncate(time.Second))
 	})
 
