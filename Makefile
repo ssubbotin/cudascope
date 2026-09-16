@@ -1,4 +1,4 @@
-.PHONY: build build-ui build-go run dev clean
+.PHONY: build build-ui build-go run dev test clean
 
 # Build everything
 build: build-ui build-go
@@ -10,6 +10,10 @@ build-ui:
 # Build Go binary (embeds UI)
 build-go:
 	go build -o bin/cudascope ./cmd/cudascope/
+
+# Run the Go tests
+test:
+	go test -race ./internal/...
 
 # Run locally
 run: build
