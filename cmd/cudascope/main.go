@@ -296,6 +296,9 @@ func storageOptions(cfg *config.Config) storage.Options {
 	return storage.Options{
 		FreshWindow:      cfg.FreshWindow(),
 		NodeOfflineAfter: cfg.NodeOfflineAfter,
+		RawRetention:     cfg.RetentionRaw,
+		M1Retention:      cfg.Retention1m,
+		MaxPoints:        cfg.MaxPoints,
 	}
 }
 

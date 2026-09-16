@@ -40,6 +40,7 @@ type Config struct {
 	RetentionAlerts       time.Duration // how long closed alert events are kept
 	VLLMUrl               string        // vLLM metrics endpoint base URL (empty = disabled)
 	VLLMInterval          time.Duration
+	MaxPoints             int    // most points one history answer carries (0 = no cap)
 	IngestToken           string // shared secret agents present to a hub (empty = disabled)
 	CORSOrigin            string // origin allowed to call the API cross-site (empty = none)
 }
@@ -113,6 +114,7 @@ func Load() *Config {
 	flag.DurationVar(&cfg.RetentionAlerts, "retention-alerts", envOrDefaultDuration("CUDASCOPE_RETENTION_ALERTS", 90*24*time.Hour), "closed alert event retention")
 	flag.StringVar(&cfg.VLLMUrl, "vllm-url", envOrDefault("CUDASCOPE_VLLM_URL", ""), "vLLM metrics endpoint base URL (empty=disabled)")
 	flag.DurationVar(&cfg.VLLMInterval, "vllm-interval", envOrDefaultDuration("CUDASCOPE_VLLM_INTERVAL", 5*time.Second), "vLLM metrics collection interval")
+	flag.IntVar(&cfg.MaxPoints, "max-points", envOrDefaultInt("CUDASCOPE_MAX_POINTS", 2000), "most points one history response carries (0=no cap)")
 	flag.StringVar(&cfg.IngestToken, "ingest-token", envOrDefault("CUDASCOPE_INGEST_TOKEN", ""), "shared secret agents must present to a hub (empty=ingest is open)")
 	flag.StringVar(&cfg.CORSOrigin, "cors-origin", envOrDefault("CUDASCOPE_CORS_ORIGIN", ""), "origin allowed to call the API cross-site (empty=none)")
 

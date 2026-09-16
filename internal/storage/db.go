@@ -50,11 +50,24 @@ type Options struct {
 	// as online. The alert engine reads the same setting, so the dot in the
 	// node list and the node_silent event agree by construction.
 	NodeOfflineAfter time.Duration
+
+	// RawRetention and M1Retention are how long those tiers survive. History
+	// queries need them: a window narrow enough for raw resolution but older
+	// than raw retention has to be answered from the rollup, and reading the
+	// empty raw table instead drew an empty chart.
+	RawRetention time.Duration
+	M1Retention  time.Duration
+
+	// MaxPoints caps how many points one history answer carries. Zero means
+	// no cap.
+	MaxPoints int
 }
 
 const (
 	defaultFreshWindow      = 30 * time.Second
 	defaultNodeOfflineAfter = 60 * time.Second
+	defaultRawRetention     = 24 * time.Hour
+	defaultM1Retention      = 30 * 24 * time.Hour
 )
 
 func (o Options) withDefaults() Options {
@@ -63,6 +76,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.NodeOfflineAfter <= 0 {
 		o.NodeOfflineAfter = defaultNodeOfflineAfter
+	}
+	if o.RawRetention <= 0 {
+		o.RawRetention = defaultRawRetention
+	}
+	if o.M1Retention <= 0 {
+		o.M1Retention = defaultM1Retention
 	}
 	return o
 }
