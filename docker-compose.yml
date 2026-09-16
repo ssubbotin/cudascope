@@ -25,7 +25,10 @@ services:
 
     environment:
       - CUDASCOPE_DATA_DIR=/data
-      - CUDASCOPE_VLLM_URL=${CUDASCOPE_VLLM_URL:-http://127.0.0.1:8000}
+      # Bare "-" on purpose: with ":-" an empty value would be replaced by
+      # the default too, and an empty CUDASCOPE_VLLM_URL is how vLLM
+      # collection is turned off.
+      - CUDASCOPE_VLLM_URL=${CUDASCOPE_VLLM_URL-http://127.0.0.1:8000}
 
 volumes:
   cudascope-data:
