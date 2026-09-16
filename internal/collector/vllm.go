@@ -12,23 +12,30 @@ import (
 	"time"
 )
 
+// vllmModelsRetry bounds how often the /v1/models fallback is tried while
+// the model name is still unknown.
+const vllmModelsRetry = time.Minute
+
 // VLLMCollector scrapes metrics from a vLLM inference server.
 type VLLMCollector struct {
-	baseURL  string
-	nodeID   string
-	client   *http.Client
+	baseURL string
+	nodeID  string
+	client  *http.Client
 
 	// previous counter values for rate computation
-	prevGenTokens      int64
-	prevGenTokensTs    time.Time
-	prevTTFTSum        float64
-	prevTTFTCount      float64
-	prevTPOTSum        float64
-	prevTPOTCount      float64
-	prevCacheHits      float64
-	prevCacheQueries   float64
+	prevGenTokens    int64
+	prevGenTokensTs  time.Time
+	prevTTFTSum      float64
+	prevTTFTCount    float64
+	prevTPOTSum      float64
+	prevTPOTCount    float64
+	prevCacheHits    float64
+	prevCacheQueries float64
 
 	modelName string
+
+	// modelsRetryAt throttles the /v1/models fallback.
+	modelsRetryAt time.Time
 }
 
 // NewVLLMCollector creates a collector that scrapes vLLM's /metrics endpoint.
@@ -36,30 +43,29 @@ func NewVLLMCollector(baseURL, nodeID string) *VLLMCollector {
 	// Trim trailing slash
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	v := &VLLMCollector{
+	// No request is made here: construction happens before the HTTP server
+	// is up, and the first scrape discovers the model name anyway.
+	return &VLLMCollector{
 		baseURL: baseURL,
 		nodeID:  nodeID,
 		client:  &http.Client{Timeout: 10 * time.Second},
 	}
-
-	// Try to fetch model name from the OpenAI-compatible API
-	v.fetchModelName()
-
-	return v
 }
 
 // fetchModelName queries /v1/models to discover the served model name.
-func (v *VLLMCollector) fetchModelName() {
+// fetchModelName queries /v1/models to discover the served model name. It
+// returns "" when the name cannot be determined.
+func (v *VLLMCollector) fetchModelName() string {
 	resp, err := v.client.Get(v.baseURL + "/v1/models")
 	if err != nil {
 		log.Printf("vllm: failed to fetch model name: %v", err)
-		return
+		return ""
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("vllm: /v1/models returned status %d", resp.StatusCode)
-		return
+		return ""
 	}
 
 	var result struct {
@@ -69,22 +75,46 @@ func (v *VLLMCollector) fetchModelName() {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		log.Printf("vllm: failed to decode /v1/models: %v", err)
+		return ""
+	}
+
+	if len(result.Data) == 0 {
+		return ""
+	}
+	return result.Data[0].ID
+}
+
+// resolveModelName keeps modelName current. The label is re-read on every
+// scrape so that a vLLM service swap is picked up, but a scrape that carries
+// no label leaves the last known name alone: /metrics answers without it
+// while the engine is still starting, and blanking the field would store
+// empty model names for those samples.
+//
+// The /v1/models fallback runs only while the name is unknown, and at most
+// once per vllmModelsRetry. It is a blocking call on the collector's own
+// goroutine and it shares the client timeout with the scrape itself.
+func (v *VLLMCollector) resolveModelName(scraped string) {
+	if scraped != "" {
+		if scraped != v.modelName {
+			log.Printf("vllm: model name = %s", scraped)
+			v.modelName = scraped
+		}
 		return
 	}
 
-	if len(result.Data) > 0 {
-		v.modelName = result.Data[0].ID
-		log.Printf("vllm: model name = %s", v.modelName)
+	if v.modelName != "" || time.Now().Before(v.modelsRetryAt) {
+		return
+	}
+	v.modelsRetryAt = time.Now().Add(vllmModelsRetry)
+
+	if name := v.fetchModelName(); name != "" {
+		log.Printf("vllm: model name = %s", name)
+		v.modelName = name
 	}
 }
 
 // Collect scrapes the vLLM /metrics endpoint and returns parsed metrics.
 func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
-	// Re-extract model name from each /metrics response: the upstream vLLM
-	// service may be restarted with a different model while cudascope is
-	// running, and we should reflect the current model, not the one that was
-	// live at cudascope startup.
-	v.modelName = ""
 
 	resp, err := v.client.Get(v.baseURL + "/metrics")
 	if err != nil {
@@ -96,16 +126,12 @@ func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
 		return nil, fmt.Errorf("GET /metrics: status %d", resp.StatusCode)
 	}
 
-	raw, err := v.parsePrometheusMetrics(resp.Body)
+	raw, scraped, err := v.parsePrometheusMetrics(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("parse metrics: %w", err)
 	}
 
-	// Fall back to /v1/models if no label was present in the /metrics output
-	// (rare, but can happen if no requests have been served since start).
-	if v.modelName == "" {
-		v.fetchModelName()
-	}
+	v.resolveModelName(scraped)
 
 	now := time.Now()
 	m := &VLLMMetrics{
@@ -169,7 +195,8 @@ func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
 
 // parsePrometheusMetrics does a simple line-by-line parse of Prometheus text format.
 // It returns a map of metric name -> value (last value wins for gauge-like metrics).
-func (v *VLLMCollector) parsePrometheusMetrics(r io.Reader) (map[string]float64, error) {
+func (v *VLLMCollector) parsePrometheusMetrics(r io.Reader) (map[string]float64, string, error) {
+	var modelName string
 	result := make(map[string]float64)
 	scanner := bufio.NewScanner(r)
 
@@ -200,12 +227,12 @@ func (v *VLLMCollector) parsePrometheusMetrics(r io.Reader) (map[string]float64,
 			start := idx + len("model_name=\"")
 			end := strings.Index(line[start:], "\"")
 			if end > 0 {
-				v.modelName = line[start : start+end]
+				modelName = line[start : start+end]
 			}
 		}
 	}
 
-	return result, scanner.Err()
+	return result, modelName, scanner.Err()
 }
 
 // parsePromLine parses a single Prometheus exposition line into metric name and value.
