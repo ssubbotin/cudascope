@@ -69,6 +69,8 @@ All settings via environment variables or CLI flags:
 | `CUDASCOPE_RETENTION_1M` | `--retention-1m` | `720h` | 1-minute rollup retention (30d) |
 | `CUDASCOPE_RETENTION_1H` | `--retention-1h` | `8760h` | 1-hour rollup retention (365d) |
 | `CUDASCOPE_AUTH` | `--auth` | - | Basic auth `user:password` |
+| `CUDASCOPE_INGEST_TOKEN` | `--ingest-token` | - | Secret agents present to a hub when pushing metrics |
+| `CUDASCOPE_CORS_ORIGIN` | `--cors-origin` | - | Origin allowed to call the API from another site |
 | `CUDASCOPE_VLLM_URL` | `--vllm-url` | - | vLLM endpoint URL (e.g. `http://localhost:8000`) |
 | `CUDASCOPE_VLLM_INTERVAL` | `--vllm-interval` | `5s` | vLLM metrics scrape interval |
 | `CUDASCOPE_ALERT_TEMP` | `--alert-temp` | `0` | Temperature alert threshold (C) |
@@ -115,6 +117,8 @@ When running in Swarm mode:
 - Online/offline node health indicators (60s heartbeat threshold)
 - Per-node labels on charts and GPU cards
 - Node column in process list
+- Agents buffer metrics while the hub is unreachable and resend them in order,
+  so a hub restart no longer leaves a hole in every node's history
 
 ### Alerts
 
@@ -185,7 +189,28 @@ docker run -d --gpus all -p 9090:9090 \
   -v cudascope-data:/data ssubbotin/cudascope
 ```
 
-Protects all endpoints except `/api/v1/healthz` and agent ingest routes.
+Protects every endpoint except `/api/v1/healthz`, which a health probe reaches
+without credentials. Credentials that do not read `user:password` stop the
+process at startup instead of silently leaving it open.
+
+**Agents pushing to a hub** authenticate with a shared secret:
+
+```bash
+# hub
+docker run -d -p 9090:9090 -e CUDASCOPE_INGEST_TOKEN=s3cret \
+  -v cudascope-data:/data ssubbotin/cudascope --mode=hub
+
+# every GPU node
+docker run -d --gpus all -e CUDASCOPE_INGEST_TOKEN=s3cret \
+  ssubbotin/cudascope --mode=agent --hub-url=http://hub:9090
+```
+
+With no token set, a hub that has `CUDASCOPE_AUTH` accepts the same
+credentials on the ingest routes, and a hub with neither logs a warning that
+its ingest is open to anything that can reach the port.
+
+Cross-origin requests are refused unless `CUDASCOPE_CORS_ORIGIN` names an
+origin. The dashboard is served by the same process, so it needs none.
 
 ### Themes
 

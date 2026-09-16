@@ -34,6 +34,9 @@ var migration006 string
 //go:embed migrations/007_vllm_rollup.sql
 var migration007 string
 
+//go:embed migrations/008_raw_unique.sql
+var migration008 string
+
 // Options tunes the queries whose answer depends on how often this
 // deployment collects.
 type Options struct {
@@ -158,6 +161,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 007: %w", err)
 		}
 		log.Println("applied migration 007 (vllm rollup)")
+	}
+
+	if version < 8 {
+		if _, err := db.conn.Exec(migration008); err != nil {
+			return fmt.Errorf("migration 008: %w", err)
+		}
+		log.Println("applied migration 008 (raw unique constraints)")
 	}
 
 	return nil

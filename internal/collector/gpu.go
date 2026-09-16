@@ -2,6 +2,7 @@ package collector
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -13,6 +14,12 @@ import (
 type GPUCollector struct {
 	devices []nvml.Device
 	info    []GPUDevice
+
+	// procError remembers that process enumeration is failing, so the cause
+	// is logged on the transition rather than every tick. Without it a
+	// process list that is empty because NVML refuses the call looks exactly
+	// like a GPU nobody is using.
+	procError bool
 }
 
 // NewGPUCollector initializes NVML and enumerates GPU devices.
@@ -183,9 +190,12 @@ func (gc *GPUCollector) CollectProcesses() []GPUProcess {
 	now := time.Now().Unix()
 	var procs []GPUProcess
 
+	failed := 0
 	for i, dev := range gc.devices {
 		infos, ret := dev.GetComputeRunningProcesses()
 		if ret != nvml.SUCCESS {
+			failed++
+			gc.reportProcessFailure(ret)
 			continue
 		}
 		for _, info := range infos {
@@ -202,6 +212,7 @@ func (gc *GPUCollector) CollectProcesses() []GPUProcess {
 		// Also check graphics processes
 		gfxInfos, ret := dev.GetGraphicsRunningProcesses()
 		if ret != nvml.SUCCESS {
+			gc.reportProcessFailure(ret)
 			continue
 		}
 		for _, info := range gfxInfos {
@@ -227,7 +238,24 @@ func (gc *GPUCollector) CollectProcesses() []GPUProcess {
 		}
 	}
 
+	if failed == 0 && gc.procError {
+		gc.procError = false
+		log.Printf("GPU process enumeration works again")
+	}
 	return procs
+}
+
+// reportProcessFailure logs the first failure of a run of them. Enumeration
+// commonly fails inside a container that does not share the host PID
+// namespace, and silence about it reads on the dashboard as a GPU with
+// nothing running on it.
+func (gc *GPUCollector) reportProcessFailure(ret nvml.Return) {
+	if gc.procError {
+		return
+	}
+	gc.procError = true
+	log.Printf("cannot list GPU processes: %v (a container needs the host PID namespace for this)",
+		nvml.ErrorString(ret))
 }
 
 // Shutdown cleans up NVML.
