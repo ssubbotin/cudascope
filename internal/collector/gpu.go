@@ -62,74 +62,120 @@ func (gc *GPUCollector) Devices() []GPUDevice {
 	return gc.info
 }
 
-// Collect reads current metrics from all GPUs.
+// gpuDevice is the part of the NVML device API this collector uses. Naming
+// it lets a device that answers nothing be tested without a GPU.
+type gpuDevice interface {
+	GetUtilizationRates() (nvml.Utilization, nvml.Return)
+	GetMemoryInfo() (nvml.Memory, nvml.Return)
+	GetTemperature(nvml.TemperatureSensors) (uint32, nvml.Return)
+	GetFanSpeed() (uint32, nvml.Return)
+	GetPowerUsage() (uint32, nvml.Return)
+	GetEnforcedPowerLimit() (uint32, nvml.Return)
+	GetClockInfo(nvml.ClockType) (uint32, nvml.Return)
+	GetPcieThroughput(nvml.PcieUtilCounter) (uint32, nvml.Return)
+	GetPerformanceState() (nvml.Pstates, nvml.Return)
+	GetEncoderUtilization() (uint32, uint32, nvml.Return)
+	GetDecoderUtilization() (uint32, uint32, nvml.Return)
+}
+
+// Collect reads current metrics from all GPUs. Devices that answered nothing
+// are left out.
 func (gc *GPUCollector) Collect() []GPUMetrics {
 	now := time.Now().Unix()
-	metrics := make([]GPUMetrics, len(gc.devices))
+	metrics := make([]GPUMetrics, 0, len(gc.devices))
 
 	for i, dev := range gc.devices {
-		m := GPUMetrics{
-			Timestamp: now,
-			GPUID:     i,
+		m, ok := collectDevice(dev, i, now)
+		if !ok {
+			continue
 		}
-
-		if util, ret := dev.GetUtilizationRates(); ret == nvml.SUCCESS {
-			m.GPUUtil = float64(util.Gpu)
-			m.MemUtil = float64(util.Memory)
-		}
-
-		if memInfo, ret := dev.GetMemoryInfo(); ret == nvml.SUCCESS {
-			m.MemUsed = memInfo.Used / (1024 * 1024)
-		}
-
-		if temp, ret := dev.GetTemperature(nvml.TEMPERATURE_GPU); ret == nvml.SUCCESS {
-			m.Temperature = int(temp)
-		}
-
-		if fan, ret := dev.GetFanSpeed(); ret == nvml.SUCCESS {
-			m.FanSpeed = int(fan)
-		}
-
-		if power, ret := dev.GetPowerUsage(); ret == nvml.SUCCESS {
-			m.PowerDraw = float64(power) / 1000.0 // mW to W
-		}
-
-		if limit, ret := dev.GetEnforcedPowerLimit(); ret == nvml.SUCCESS {
-			m.PowerLimit = float64(limit) / 1000.0
-		}
-
-		if clock, ret := dev.GetClockInfo(nvml.CLOCK_GRAPHICS); ret == nvml.SUCCESS {
-			m.ClockGfx = int(clock)
-		}
-
-		if clock, ret := dev.GetClockInfo(nvml.CLOCK_MEM); ret == nvml.SUCCESS {
-			m.ClockMem = int(clock)
-		}
-
-		if tx, ret := dev.GetPcieThroughput(nvml.PCIE_UTIL_TX_BYTES); ret == nvml.SUCCESS {
-			m.PCIeTx = int(tx)
-		}
-
-		if rx, ret := dev.GetPcieThroughput(nvml.PCIE_UTIL_RX_BYTES); ret == nvml.SUCCESS {
-			m.PCIeRx = int(rx)
-		}
-
-		if pstate, ret := dev.GetPerformanceState(); ret == nvml.SUCCESS {
-			m.PState = int(pstate)
-		}
-
-		if util, _, ret := dev.GetEncoderUtilization(); ret == nvml.SUCCESS {
-			m.EncoderUtil = float64(util)
-		}
-
-		if util, _, ret := dev.GetDecoderUtilization(); ret == nvml.SUCCESS {
-			m.DecoderUtil = float64(util)
-		}
-
-		metrics[i] = m
+		metrics = append(metrics, m)
 	}
 
 	return metrics
+}
+
+// collectDevice reads one device. ok is false when every call failed, which
+// is what a driver answering with errors rather than blocking looks like: a
+// version mismatch after an upgrade, an Xid, a card off the bus.
+//
+// Such a sample must not be stored. Every field would be zero, which reads
+// on the dashboard exactly like an idle GPU, and its fresh timestamp would
+// keep the staleness checks quiet while nothing is being measured at all.
+func collectDevice(dev gpuDevice, id int, now int64) (GPUMetrics, bool) {
+	m := GPUMetrics{
+		Timestamp: now,
+		GPUID:     id,
+	}
+	ok := false
+
+	if util, ret := dev.GetUtilizationRates(); ret == nvml.SUCCESS {
+		ok = true
+		m.GPUUtil = float64(util.Gpu)
+		m.MemUtil = float64(util.Memory)
+	}
+
+	if memInfo, ret := dev.GetMemoryInfo(); ret == nvml.SUCCESS {
+		ok = true
+		m.MemUsed = memInfo.Used / (1024 * 1024)
+	}
+
+	if temp, ret := dev.GetTemperature(nvml.TEMPERATURE_GPU); ret == nvml.SUCCESS {
+		ok = true
+		m.Temperature = int(temp)
+	}
+
+	if fan, ret := dev.GetFanSpeed(); ret == nvml.SUCCESS {
+		ok = true
+		m.FanSpeed = int(fan)
+	}
+
+	if power, ret := dev.GetPowerUsage(); ret == nvml.SUCCESS {
+		ok = true
+		m.PowerDraw = float64(power) / 1000.0 // mW to W
+	}
+
+	if limit, ret := dev.GetEnforcedPowerLimit(); ret == nvml.SUCCESS {
+		ok = true
+		m.PowerLimit = float64(limit) / 1000.0
+	}
+
+	if clock, ret := dev.GetClockInfo(nvml.CLOCK_GRAPHICS); ret == nvml.SUCCESS {
+		ok = true
+		m.ClockGfx = int(clock)
+	}
+
+	if clock, ret := dev.GetClockInfo(nvml.CLOCK_MEM); ret == nvml.SUCCESS {
+		ok = true
+		m.ClockMem = int(clock)
+	}
+
+	if tx, ret := dev.GetPcieThroughput(nvml.PCIE_UTIL_TX_BYTES); ret == nvml.SUCCESS {
+		ok = true
+		m.PCIeTx = int(tx)
+	}
+
+	if rx, ret := dev.GetPcieThroughput(nvml.PCIE_UTIL_RX_BYTES); ret == nvml.SUCCESS {
+		ok = true
+		m.PCIeRx = int(rx)
+	}
+
+	if pstate, ret := dev.GetPerformanceState(); ret == nvml.SUCCESS {
+		ok = true
+		m.PState = int(pstate)
+	}
+
+	if util, _, ret := dev.GetEncoderUtilization(); ret == nvml.SUCCESS {
+		ok = true
+		m.EncoderUtil = float64(util)
+	}
+
+	if util, _, ret := dev.GetDecoderUtilization(); ret == nvml.SUCCESS {
+		ok = true
+		m.DecoderUtil = float64(util)
+	}
+
+	return m, ok
 }
 
 // CollectProcesses returns GPU processes for all devices.

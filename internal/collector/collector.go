@@ -46,6 +46,10 @@ type Collector struct {
 	gpuInterval  time.Duration
 	hostInterval time.Duration
 	vllmInterval time.Duration
+
+	// gpuSilent tracks whether the GPUs have stopped answering, so the
+	// transition is logged once instead of every tick.
+	gpuSilent bool
 }
 
 // New creates a new Collector.
@@ -120,6 +124,20 @@ func runTicker(ctx context.Context, interval time.Duration, fn func()) {
 
 func (c *Collector) collectGPU() {
 	metrics := c.gpu.Collect()
+
+	// Nothing answered. Storing an empty batch would refresh the freshness
+	// checks without a single measurement behind them.
+	if len(metrics) == 0 {
+		if !c.gpuSilent {
+			c.gpuSilent = true
+			log.Printf("no GPU answered; samples are not being stored")
+		}
+		return
+	}
+	if c.gpuSilent {
+		c.gpuSilent = false
+		log.Printf("GPUs are answering again")
+	}
 
 	if err := c.storage.WriteGPUMetrics(metrics); err != nil {
 		log.Printf("error writing GPU metrics: %v", err)
