@@ -31,6 +31,9 @@ var migration005 string
 //go:embed migrations/006_alert_events.sql
 var migration006 string
 
+//go:embed migrations/007_vllm_rollup.sql
+var migration007 string
+
 // Options tunes the queries whose answer depends on how often this
 // deployment collects.
 type Options struct {
@@ -148,6 +151,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 006: %w", err)
 		}
 		log.Println("applied migration 006 (alert events)")
+	}
+
+	if version < 7 {
+		if _, err := db.conn.Exec(migration007); err != nil {
+			return fmt.Errorf("migration 007: %w", err)
+		}
+		log.Println("applied migration 007 (vllm rollup)")
 	}
 
 	return nil

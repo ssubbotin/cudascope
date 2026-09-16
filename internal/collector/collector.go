@@ -199,7 +199,6 @@ func (c *Collector) collectGPU() {
 			GPUs:      metrics,
 		})
 	}
-
 }
 
 // collectProcesses runs on its own loop, at its own interval.

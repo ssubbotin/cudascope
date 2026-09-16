@@ -62,6 +62,7 @@ All settings via environment variables or CLI flags:
 | `CUDASCOPE_NODE_ID` | `--node-id` | hostname | Node identifier for multi-node |
 | `CUDASCOPE_COLLECT_INTERVAL` | `--collect-interval` | `1s` | GPU metric collection interval |
 | `CUDASCOPE_HOST_INTERVAL` | `--host-interval` | `5s` | Host metric collection interval |
+| `CUDASCOPE_PROCESS_INTERVAL` | `--process-interval` | `5s` | GPU process list collection interval |
 | `CUDASCOPE_COLLECT_STALE_AFTER` | `--collect-stale-after` | `1m` | Standalone only. `/api/v1/healthz` fails once collection is older than this (0 disables) |
 | `CUDASCOPE_COLLECT_STALL_EXIT_AFTER` | `--collect-stall-exit-after` | `5m` | Standalone only. Exit once collection is older than this, so the supervisor restarts the process (0 disables) |
 | `CUDASCOPE_RETENTION_RAW` | `--retention-raw` | `24h` | Raw metrics retention |
@@ -148,6 +149,9 @@ docker run -d --gpus all -p 9090:9090 \
   -e CUDASCOPE_VLLM_URL=http://localhost:8000 \
   -v cudascope-data:/data ssubbotin/cudascope
 ```
+
+Works in standalone mode and in agent mode: each agent scrapes the vLLM server
+on its own node and pushes the numbers to the hub.
 
 The dashboard shows:
 - **Token throughput** (tok/s) with sparkline history
@@ -273,7 +277,9 @@ docker compose build
 | 1-minute | 1m avg | 30d | ~4 MB/month |
 | 1-hour | 1h avg | 365d | ~1 MB/year |
 
-Rollup and pruning run automatically every 60 seconds.
+Rollup and pruning run automatically every 60 seconds, for GPU, host and vLLM
+metrics alike. The rollups keep the peak of each bucket alongside its average,
+so a spike that lasted seconds is still visible in a month-wide chart.
 
 Data is stored in SQLite at the path specified by `CUDASCOPE_DATA_DIR` (default `/data`). The `-v cudascope-data:/data` flag in the Docker commands creates a named volume that persists across container restarts and upgrades.
 

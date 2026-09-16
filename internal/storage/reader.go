@@ -277,21 +277,18 @@ func (db *DB) GetLatestHostMetrics() ([]collector.HostMetrics, error) {
 	return metrics, rows.Err()
 }
 
-// ReadVLLMMetrics returns vLLM metrics for a time range, optionally filtered by node.
+// ReadVLLMMetrics returns vLLM metrics for a time range, auto-selecting
+// resolution the same way GPU and host history does.
 func (db *DB) ReadVLLMMetrics(nodeID string, from, to int64) ([]collector.VLLMMetrics, error) {
+	table, cols := selectVLLMResolution(to - from)
+
 	var query string
 	var args []any
 	if nodeID != "" {
-		query = `SELECT ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
-			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
-			token_throughput, prefix_cache_hit_rate, num_preemptions
-			FROM vllm_metrics_raw WHERE node_id = ? AND ts >= ? AND ts <= ? ORDER BY ts`
+		query = fmt.Sprintf("SELECT %s FROM %s WHERE node_id = ? AND ts >= ? AND ts <= ? ORDER BY ts", cols, table)
 		args = []any{nodeID, from, to}
 	} else {
-		query = `SELECT ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
-			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
-			token_throughput, prefix_cache_hit_rate, num_preemptions
-			FROM vllm_metrics_raw WHERE ts >= ? AND ts <= ? ORDER BY ts`
+		query = fmt.Sprintf("SELECT %s FROM %s WHERE ts >= ? AND ts <= ? ORDER BY ts", cols, table)
 		args = []any{from, to}
 	}
 
@@ -314,6 +311,31 @@ func (db *DB) ReadVLLMMetrics(nodeID string, from, to int64) ([]collector.VLLMMe
 		metrics = append(metrics, m)
 	}
 	return metrics, rows.Err()
+}
+
+// selectVLLMResolution picks the table for a span. The rollups report peaks
+// for throughput, queue depth and cache occupancy, because a minute that
+// averages to nothing can still contain the burst worth seeing.
+func selectVLLMResolution(spanSec int64) (table, cols string) {
+	switch {
+	case spanSec <= 3600: // <=1h: raw samples
+		return "vllm_metrics_raw",
+			`ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
+			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
+			token_throughput, prefix_cache_hit_rate, num_preemptions`
+	case spanSec <= 2592000: // <=30d: 1m rollup
+		return "vllm_metrics_1m",
+			`ts, node_id, model_name,
+			CAST(requests_running_max AS INTEGER), CAST(requests_waiting_max AS INTEGER),
+			kv_cache_usage_max, generation_tokens_total, prompt_tokens_total,
+			ttft_avg, tpot_avg, token_throughput_max, prefix_cache_hit_rate_avg, num_preemptions`
+	default: // >30d: 1h rollup
+		return "vllm_metrics_1h",
+			`ts, node_id, model_name,
+			CAST(requests_running_max AS INTEGER), CAST(requests_waiting_max AS INTEGER),
+			kv_cache_usage_max, generation_tokens_total, prompt_tokens_total,
+			ttft_avg, tpot_avg, token_throughput_max, prefix_cache_hit_rate_avg, num_preemptions`
+	}
 }
 
 // ReadLatestVLLMMetrics returns the most recent vLLM metrics for a node.
