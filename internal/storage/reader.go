@@ -25,14 +25,15 @@ func (db *DB) GetNodes() ([]collector.Node, error) {
 	defer rows.Close()
 
 	now := time.Now().Unix()
+	offlineAfter := int64(db.opts.NodeOfflineAfter.Seconds())
 	var nodes []collector.Node
 	for rows.Next() {
 		var n collector.Node
 		if err := rows.Scan(&n.NodeID, &n.Hostname, &n.GPUCount, &n.FirstSeen, &n.LastSeen); err != nil {
 			return nil, err
 		}
-		// Node is online if seen within last 60 seconds
-		n.Online = (now - n.LastSeen) < 60
+		// Online means the heartbeat is younger than the configured silence.
+		n.Online = (now - n.LastSeen) < offlineAfter
 		nodes = append(nodes, n)
 	}
 	return nodes, rows.Err()
@@ -43,10 +44,10 @@ func (db *DB) GetGPUDevices(nodeID string) ([]collector.GPUDevice, error) {
 	var query string
 	var args []any
 	if nodeID != "" {
-		query = "SELECT node_id, gpu_id, uuid, name, mem_total, driver_ver FROM gpu_devices WHERE node_id = ? ORDER BY gpu_id"
+		query = "SELECT node_id, gpu_id, uuid, name, mem_total, driver_ver, ecc_supported, throttle_supported FROM gpu_devices WHERE node_id = ? ORDER BY gpu_id"
 		args = []any{nodeID}
 	} else {
-		query = "SELECT node_id, gpu_id, uuid, name, mem_total, driver_ver FROM gpu_devices ORDER BY node_id, gpu_id"
+		query = "SELECT node_id, gpu_id, uuid, name, mem_total, driver_ver, ecc_supported, throttle_supported FROM gpu_devices ORDER BY node_id, gpu_id"
 	}
 
 	rows, err := db.conn.Query(query, args...)
@@ -58,7 +59,8 @@ func (db *DB) GetGPUDevices(nodeID string) ([]collector.GPUDevice, error) {
 	var devices []collector.GPUDevice
 	for rows.Next() {
 		var d collector.GPUDevice
-		if err := rows.Scan(&d.NodeID, &d.ID, &d.UUID, &d.Name, &d.MemTotal, &d.DriverVer); err != nil {
+		if err := rows.Scan(&d.NodeID, &d.ID, &d.UUID, &d.Name, &d.MemTotal, &d.DriverVer,
+			&d.EccSupported, &d.ThrottleSupported); err != nil {
 			return nil, err
 		}
 		devices = append(devices, d)
@@ -66,43 +68,25 @@ func (db *DB) GetGPUDevices(nodeID string) ([]collector.GPUDevice, error) {
 	return devices, rows.Err()
 }
 
-// GetGPUMetrics returns GPU metrics for a time range, auto-selecting resolution.
+// GetGPUMetrics returns GPU metrics for a window, at the finest resolution
+// that both survives and fits.
 func (db *DB) GetGPUMetrics(q GPUMetricsQuery) ([]collector.GPUMetrics, error) {
-	span := q.To - q.From
-	table, cols := selectResolution(span)
+	tier, bucket := gpuSeries.pick(db.opts, q.From, q.To)
 
-	var query string
-	var args []any
+	where := "gpu_id = ? AND ts >= ? AND ts <= ?"
+	args := []any{q.GPUID, q.From, q.To}
 	if q.NodeID != "" {
-		query = fmt.Sprintf("SELECT %s FROM %s WHERE node_id = ? AND gpu_id = ? AND ts >= ? AND ts <= ? ORDER BY ts", cols, table)
-		args = []any{q.NodeID, q.GPUID, q.From, q.To}
-	} else {
-		query = fmt.Sprintf("SELECT %s FROM %s WHERE gpu_id = ? AND ts >= ? AND ts <= ? ORDER BY ts", cols, table)
-		args = []any{q.GPUID, q.From, q.To}
+		where = "node_id = ? AND " + where
+		args = append([]any{q.NodeID}, args...)
 	}
 
-	rows, err := db.conn.Query(query, args...)
+	rows, err := db.conn.Query(tier.query(bucket, where), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	return scanGPUMetrics(rows)
-}
-
-// selectResolution picks the appropriate table based on time span.
-func selectResolution(spanSec int64) (table, cols string) {
-	switch {
-	case spanSec <= 3600: // <=1h: raw data
-		return "gpu_metrics_raw",
-			"ts, COALESCE(node_id, 'local'), gpu_id, gpu_util, mem_util, mem_used, temperature, fan_speed, power_draw, power_limit, clock_gfx, clock_mem, pcie_tx, pcie_rx, pstate, encoder_util, decoder_util"
-	case spanSec <= 2592000: // <=30d: 1m rollup (use max for util/temp to preserve spikes)
-		return "gpu_metrics_1m",
-			"ts, COALESCE(node_id, 'local'), gpu_id, gpu_util_max, mem_util_avg, CAST(mem_used_max AS INTEGER), temperature_max, CAST(fan_speed_avg AS INTEGER), power_draw_avg, 0, CAST(clock_gfx_avg AS INTEGER), CAST(clock_mem_avg AS INTEGER), CAST(pcie_tx_avg AS INTEGER), CAST(pcie_rx_avg AS INTEGER), 0, 0, 0"
-	default: // >30d: 1h rollup (use max for util/temp to preserve spikes)
-		return "gpu_metrics_1h",
-			"ts, COALESCE(node_id, 'local'), gpu_id, gpu_util_max, mem_util_avg, CAST(mem_used_max AS INTEGER), temperature_max, 0, power_draw_avg, 0, 0, 0, 0, 0, 0, 0, 0"
-	}
 }
 
 func scanGPUMetrics(rows *sql.Rows) ([]collector.GPUMetrics, error) {
@@ -115,6 +99,7 @@ func scanGPUMetrics(rows *sql.Rows) ([]collector.GPUMetrics, error) {
 			&m.Temperature, &m.FanSpeed, &m.PowerDraw, &m.PowerLimit,
 			&m.ClockGfx, &m.ClockMem, &m.PCIeTx, &m.PCIeRx,
 			&m.PState, &m.EncoderUtil, &m.DecoderUtil,
+			&m.ThrottleReasons, &m.EccCorrected, &m.EccUncorrected,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
@@ -124,22 +109,18 @@ func scanGPUMetrics(rows *sql.Rows) ([]collector.GPUMetrics, error) {
 	return metrics, rows.Err()
 }
 
-// GetHostMetrics returns host metrics for a time range, optionally filtered by node.
+// GetHostMetrics returns host metrics for a window, optionally for one node.
 func (db *DB) GetHostMetrics(from, to int64, nodeID string) ([]collector.HostMetrics, error) {
-	span := to - from
-	table, cols := selectHostResolution(span)
+	tier, bucket := hostSeries.pick(db.opts, from, to)
 
-	var query string
-	var args []any
+	where := "ts >= ? AND ts <= ?"
+	args := []any{from, to}
 	if nodeID != "" {
-		query = fmt.Sprintf("SELECT %s FROM %s WHERE node_id = ? AND ts >= ? AND ts <= ? ORDER BY ts", cols, table)
-		args = []any{nodeID, from, to}
-	} else {
-		query = fmt.Sprintf("SELECT %s FROM %s WHERE ts >= ? AND ts <= ? ORDER BY ts", cols, table)
-		args = []any{from, to}
+		where = "node_id = ? AND " + where
+		args = append([]any{nodeID}, args...)
 	}
 
-	rows, err := db.conn.Query(query, args...)
+	rows, err := db.conn.Query(tier.query(bucket, where), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -158,23 +139,9 @@ func (db *DB) GetHostMetrics(from, to int64, nodeID string) ([]collector.HostMet
 	return metrics, rows.Err()
 }
 
-func selectHostResolution(spanSec int64) (table, cols string) {
-	switch {
-	case spanSec <= 3600:
-		return "host_metrics_raw",
-			"ts, node_id, cpu_percent, mem_used, mem_total, disk_used, disk_total, net_rx, net_tx, load_1m, load_5m, load_15m"
-	case spanSec <= 2592000: // <=30d: 1m rollup (use max for cpu to preserve spikes)
-		return "host_metrics_1m",
-			"ts, node_id, cpu_percent_max, CAST(mem_used_max AS INTEGER), mem_total, disk_used, disk_total, CAST(net_rx_avg AS INTEGER), CAST(net_tx_avg AS INTEGER), load_1m_max, 0, 0"
-	default: // >30d: 1h rollup
-		return "host_metrics_1h",
-			"ts, node_id, cpu_percent_max, CAST(mem_used_max AS INTEGER), mem_total, 0, 0, 0, 0, load_1m_max, 0, 0"
-	}
-}
-
 // GetGPUProcesses returns current GPU processes (latest snapshot), optionally filtered by node.
 func (db *DB) GetGPUProcesses(gpuID int, nodeID string) ([]collector.GPUProcess, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 
 	var query string
 	var args []any
@@ -209,19 +176,21 @@ func (db *DB) GetGPUProcesses(gpuID int, nodeID string) ([]collector.GPUProcess,
 
 // GetLatestGPUMetrics returns the most recent metric for each GPU across all nodes.
 func (db *DB) GetLatestGPUMetrics() ([]collector.GPUMetrics, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 	rows, err := db.conn.Query(`
 		WITH latest AS (
 			SELECT ts, COALESCE(node_id, 'local') as node_id, gpu_id, gpu_util, mem_util, mem_used,
 				temperature, fan_speed, power_draw, power_limit, clock_gfx, clock_mem,
 				pcie_tx, pcie_rx, pstate, encoder_util, decoder_util,
+				throttle_reasons, ecc_corrected, ecc_uncorrected,
 				ROW_NUMBER() OVER (PARTITION BY COALESCE(node_id, 'local'), gpu_id ORDER BY ts DESC) as rn
 			FROM gpu_metrics_raw
 			WHERE ts >= ?
 		)
 		SELECT ts, node_id, gpu_id, gpu_util, mem_util, mem_used,
 			temperature, fan_speed, power_draw, power_limit, clock_gfx, clock_mem,
-			pcie_tx, pcie_rx, pstate, encoder_util, decoder_util
+			pcie_tx, pcie_rx, pstate, encoder_util, decoder_util,
+			throttle_reasons, ecc_corrected, ecc_uncorrected
 		FROM latest WHERE rn = 1 ORDER BY node_id, gpu_id`, cutoff)
 	if err != nil {
 		return nil, err
@@ -234,7 +203,8 @@ func (db *DB) GetLatestGPUMetrics() ([]collector.GPUMetrics, error) {
 		err := rows.Scan(&m.Timestamp, &m.NodeID, &m.GPUID, &m.GPUUtil, &m.MemUtil, &m.MemUsed,
 			&m.Temperature, &m.FanSpeed, &m.PowerDraw, &m.PowerLimit,
 			&m.ClockGfx, &m.ClockMem, &m.PCIeTx, &m.PCIeRx,
-			&m.PState, &m.EncoderUtil, &m.DecoderUtil)
+			&m.PState, &m.EncoderUtil, &m.DecoderUtil,
+			&m.ThrottleReasons, &m.EccCorrected, &m.EccUncorrected)
 		if err != nil {
 			return nil, err
 		}
@@ -245,7 +215,7 @@ func (db *DB) GetLatestGPUMetrics() ([]collector.GPUMetrics, error) {
 
 // GetLatestHostMetrics returns the most recent host metrics (one per node).
 func (db *DB) GetLatestHostMetrics() ([]collector.HostMetrics, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 	rows, err := db.conn.Query(`
 		WITH latest AS (
 			SELECT ts, node_id, cpu_percent, mem_used, mem_total,
@@ -276,25 +246,18 @@ func (db *DB) GetLatestHostMetrics() ([]collector.HostMetrics, error) {
 	return metrics, rows.Err()
 }
 
-// ReadVLLMMetrics returns vLLM metrics for a time range, optionally filtered by node.
+// ReadVLLMMetrics returns vLLM metrics for a window, optionally for one node.
 func (db *DB) ReadVLLMMetrics(nodeID string, from, to int64) ([]collector.VLLMMetrics, error) {
-	var query string
-	var args []any
+	tier, bucket := vllmSeries.pick(db.opts, from, to)
+
+	where := "ts >= ? AND ts <= ?"
+	args := []any{from, to}
 	if nodeID != "" {
-		query = `SELECT ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
-			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
-			token_throughput, prefix_cache_hit_rate, num_preemptions
-			FROM vllm_metrics_raw WHERE node_id = ? AND ts >= ? AND ts <= ? ORDER BY ts`
-		args = []any{nodeID, from, to}
-	} else {
-		query = `SELECT ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
-			generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
-			token_throughput, prefix_cache_hit_rate, num_preemptions
-			FROM vllm_metrics_raw WHERE ts >= ? AND ts <= ? ORDER BY ts`
-		args = []any{from, to}
+		where = "node_id = ? AND " + where
+		args = append([]any{nodeID}, args...)
 	}
 
-	rows, err := db.conn.Query(query, args...)
+	rows, err := db.conn.Query(tier.query(bucket, where), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +280,7 @@ func (db *DB) ReadVLLMMetrics(nodeID string, from, to int64) ([]collector.VLLMMe
 
 // ReadLatestVLLMMetrics returns the most recent vLLM metrics for a node.
 func (db *DB) ReadLatestVLLMMetrics(nodeID string) (*collector.VLLMMetrics, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 
 	var query string
 	var args []any
@@ -350,19 +313,32 @@ func (db *DB) ReadLatestVLLMMetrics(nodeID string) (*collector.VLLMMetrics, erro
 	return &m, nil
 }
 
-// GetAllGPUProcesses returns the latest process snapshot across all GPUs and nodes.
+// GetAllGPUProcesses returns the newest process snapshot of every GPU on
+// every node.
+//
+// The snapshot is the rows of one collection tick, found per GPU through
+// MAX(ts). Taking the newest row of every PID seen inside the freshness
+// window instead would keep listing processes that have already exited,
+// with their memory still counted against the card, until the window rolled
+// past them.
 func (db *DB) GetAllGPUProcesses() ([]collector.GPUProcess, error) {
-	cutoff := time.Now().Unix() - 30
+	cutoff := db.freshCutoff()
 
 	rows, err := db.conn.Query(`
-		WITH latest AS (
-			SELECT ts, COALESCE(node_id, 'local') as node_id, gpu_id, pid, name, gpu_mem,
-				ROW_NUMBER() OVER (PARTITION BY COALESCE(node_id, 'local'), gpu_id, pid ORDER BY ts DESC) as rn
+		WITH ticks AS (
+			SELECT COALESCE(node_id, 'local') AS node_id, gpu_id, MAX(ts) AS ts
 			FROM gpu_processes
 			WHERE ts >= ?
+			GROUP BY COALESCE(node_id, 'local'), gpu_id
 		)
-		SELECT ts, node_id, gpu_id, pid, name, gpu_mem
-		FROM latest WHERE rn = 1 ORDER BY node_id, gpu_id, pid`, cutoff)
+		SELECT p.ts, COALESCE(p.node_id, 'local'), p.gpu_id, p.pid, p.name, p.gpu_mem
+		FROM gpu_processes p
+		JOIN ticks t
+			ON COALESCE(p.node_id, 'local') = t.node_id
+			AND p.gpu_id = t.gpu_id
+			AND p.ts = t.ts
+		WHERE p.ts >= ?
+		ORDER BY 2, p.gpu_id, p.pid`, cutoff, cutoff)
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { onMessage, connected } from '$lib/stores/websocket';
 	import GPUCard from '$lib/components/GPUCard.svelte';
 	import HostCard from '$lib/components/HostCard.svelte';
 	import VLLMCard from '$lib/components/VLLMCard.svelte';
@@ -7,7 +8,7 @@
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import NodeSelector from '$lib/components/NodeSelector.svelte';
-	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory, parseRangeSeconds, latestVLLM, vllmHistory } from '$lib/stores/metrics';
+	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory, parseRangeSeconds, latestVLLM, vllmHistory, isLiveRange, appendPoint } from '$lib/stores/metrics';
 	import type { GPUMetrics, HostMetrics } from '$lib/stores/metrics';
 
 	const GPU_COLORS = ['#38bdf8', '#4ade80', '#fbbf24', '#f87171', '#a78bfa', '#fb923c', '#2dd4bf', '#e879f9'];
@@ -76,7 +77,57 @@
 
 		hostHistoryData = await fetchHostHistory(range, nodeFilter);
 		loading = false;
+		historyLoaded = true;
+		setupRefresh();
 	}
+
+	// Charts of an hour or less follow the websocket. Refetching the whole
+	// window every ten seconds sent the same thousands of points over and
+	// over while the stream was already delivering each new one.
+	let liveTail = $derived(isLiveRange(selectedRange) && ($nodes.length <= 1 || $selectedNode !== 'all'));
+
+	function appendGPUPoints(gpus: GPUMetrics[], nodeId: string) {
+		const window = parseRangeSeconds(selectedRange);
+		const next = new Map(allGPUHistory);
+		let changed = false;
+
+		filteredDevices.forEach((device, index) => {
+			if ((device.node_id || 'local') !== nodeId) return;
+			const sample = gpus.find((g) => g.gpu_id === device.id);
+			if (!sample) return;
+			next.set(index, appendPoint(next.get(index) || [], { ...sample, node_id: nodeId }, window));
+			changed = true;
+		});
+
+		if (changed) {
+			allGPUHistory = next;
+			xMax = Math.floor(Date.now() / 1000);
+		}
+	}
+
+	const stopListening = onMessage((data: any) => {
+		if (!liveTail) return;
+		const nodeId = data.node_id || 'local';
+		if ($selectedNode !== 'all' && nodeId !== $selectedNode) return;
+
+		if (data.type === 'gpu_metrics' && data.gpus) {
+			appendGPUPoints(data.gpus, nodeId);
+		}
+		if (data.type === 'host_metrics' && data.host) {
+			hostHistoryData = appendPoint(hostHistoryData, data.host, parseRangeSeconds(selectedRange));
+		}
+	});
+
+	// A dropped connection leaves a gap the stream cannot fill, so refetch
+	// once it is back.
+	// Declared here rather than reusing the mount flag below: this callback
+	// fires the moment it subscribes, before that declaration has run.
+	let wasConnected = true;
+	let historyLoaded = false;
+	const stopWatchingConnection = connected.subscribe((isConnected) => {
+		if (isConnected && !wasConnected && historyLoaded) loadHistory(selectedRange, true);
+		wasConnected = isConnected;
+	});
 
 	// Build multi-GPU overlay chart data: use timestamps from first GPU
 	let chartTimestamps = $derived.by(() => {
@@ -122,9 +173,10 @@
 
 	function setupRefresh() {
 		clearInterval(refreshInterval);
-		if (autoRefresh) {
-			refreshInterval = setInterval(() => loadHistory(selectedRange, true), 10000);
-		}
+		if (!autoRefresh || liveTail) return;
+		// Wider ranges are drawn from rollups, which change once a minute at
+		// most.
+		refreshInterval = setInterval(() => loadHistory(selectedRange, true), 60000);
 	}
 
 	// Wait for devices to be populated (fetchStatus in layout is async)
@@ -139,6 +191,8 @@
 
 	onDestroy(() => {
 		clearInterval(refreshInterval);
+		stopListening();
+		stopWatchingConnection();
 	});
 
 	function handleRefreshToggle(enabled: boolean) {

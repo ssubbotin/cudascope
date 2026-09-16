@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -27,14 +28,84 @@ var migration004 string
 //go:embed migrations/005_vllm.sql
 var migration005 string
 
+//go:embed migrations/006_alert_events.sql
+var migration006 string
+
+//go:embed migrations/007_vllm_rollup.sql
+var migration007 string
+
+//go:embed migrations/008_raw_unique.sql
+var migration008 string
+
+//go:embed migrations/009_throttle_ecc.sql
+var migration009 string
+
+//go:embed migrations/010_rollup_throttle.sql
+var migration010 string
+
+// Options tunes the queries whose answer depends on how often this
+// deployment collects.
+type Options struct {
+	// FreshWindow is how old the newest sample may be and still count as
+	// current. It follows the collection interval, because a hardcoded
+	// window silently empties the dashboard for anyone who collects more
+	// slowly than the author assumed.
+	FreshWindow time.Duration
+
+	// NodeOfflineAfter is the heartbeat age at which a node stops counting
+	// as online. The alert engine reads the same setting, so the dot in the
+	// node list and the node_silent event agree by construction.
+	NodeOfflineAfter time.Duration
+
+	// RawRetention and M1Retention are how long those tiers survive. History
+	// queries need them: a window narrow enough for raw resolution but older
+	// than raw retention has to be answered from the rollup, and reading the
+	// empty raw table instead drew an empty chart.
+	RawRetention time.Duration
+	M1Retention  time.Duration
+
+	// MaxPoints caps how many points one history answer carries. Zero means
+	// no cap.
+	MaxPoints int
+}
+
+const (
+	defaultFreshWindow      = 30 * time.Second
+	defaultNodeOfflineAfter = 60 * time.Second
+	defaultRawRetention     = 24 * time.Hour
+	defaultM1Retention      = 30 * 24 * time.Hour
+)
+
+func (o Options) withDefaults() Options {
+	if o.FreshWindow <= 0 {
+		o.FreshWindow = defaultFreshWindow
+	}
+	if o.NodeOfflineAfter <= 0 {
+		o.NodeOfflineAfter = defaultNodeOfflineAfter
+	}
+	if o.RawRetention <= 0 {
+		o.RawRetention = defaultRawRetention
+	}
+	if o.M1Retention <= 0 {
+		o.M1Retention = defaultM1Retention
+	}
+	return o
+}
+
 // DB wraps a SQLite connection with metrics-specific operations.
 type DB struct {
 	conn *sql.DB
 	mu   sync.Mutex // serialize writes
+	opts Options
+}
+
+// freshCutoff is the oldest timestamp a "latest" query accepts.
+func (db *DB) freshCutoff() int64 {
+	return time.Now().Add(-db.opts.FreshWindow).Unix()
 }
 
 // Open creates or opens the SQLite database.
-func Open(dataDir string) (*DB, error) {
+func Open(dataDir string, opts Options) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
@@ -48,7 +119,7 @@ func Open(dataDir string) (*DB, error) {
 	// Single writer connection for SQLite
 	conn.SetMaxOpenConns(1)
 
-	db := &DB{conn: conn}
+	db := &DB{conn: conn, opts: opts.withDefaults()}
 	if err := db.migrate(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -101,6 +172,41 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 005: %w", err)
 		}
 		log.Println("applied migration 005 (vllm metrics)")
+	}
+
+	if version < 6 {
+		if _, err := db.conn.Exec(migration006); err != nil {
+			return fmt.Errorf("migration 006: %w", err)
+		}
+		log.Println("applied migration 006 (alert events)")
+	}
+
+	if version < 7 {
+		if _, err := db.conn.Exec(migration007); err != nil {
+			return fmt.Errorf("migration 007: %w", err)
+		}
+		log.Println("applied migration 007 (vllm rollup)")
+	}
+
+	if version < 8 {
+		if _, err := db.conn.Exec(migration008); err != nil {
+			return fmt.Errorf("migration 008: %w", err)
+		}
+		log.Println("applied migration 008 (raw unique constraints)")
+	}
+
+	if version < 9 {
+		if _, err := db.conn.Exec(migration009); err != nil {
+			return fmt.Errorf("migration 009: %w", err)
+		}
+		log.Println("applied migration 009 (throttle reasons and ECC)")
+	}
+
+	if version < 10 {
+		if _, err := db.conn.Exec(migration010); err != nil {
+			return fmt.Errorf("migration 010: %w", err)
+		}
+		log.Println("applied migration 010 (throttle reasons in the rollups)")
 	}
 
 	return nil

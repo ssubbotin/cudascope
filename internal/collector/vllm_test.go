@@ -173,3 +173,41 @@ func TestCollectFollowsAModelSwapWithoutALabel(t *testing.T) {
 		t.Errorf("after the cooldown: got %q, want %q", got, "gemma4")
 	}
 }
+
+// Every field read from the exposition is optional, and a missing key reads
+// as zero. A scrape carrying no vLLM metric at all is therefore a series of
+// convincing zeroes: an idle engine with an empty KV cache, stored with a
+// fresh timestamp. The GPU collector already refuses that shape of sample.
+func TestAScrapeWithoutVLLMMetricsIsRefused(t *testing.T) {
+	f := newFakeVLLM(t, "qwen", "")
+	f.body.Store("# HELP process_cpu_seconds_total Total user and system CPU time\nprocess_cpu_seconds_total 1.5\n")
+
+	v := NewVLLMCollector(f.srv.URL, "local")
+	m, err := v.Collect()
+	if err == nil {
+		t.Fatalf("a page with no vLLM metric produced a sample: %+v", m)
+	}
+	if m != nil {
+		t.Fatalf("want no sample, got %+v", m)
+	}
+}
+
+// vLLM renamed the cache gauge between engine versions. Reading only the
+// newer name left the panel showing an empty KV cache for ever on the older
+// one, which is indistinguishable from an idle server.
+func TestCollectReadsEitherCacheMetricName(t *testing.T) {
+	f := newFakeVLLM(t, "", "")
+	f.body.Store("vllm:num_requests_running 1.0\nvllm:gpu_cache_usage_perc 0.42\n")
+
+	v := NewVLLMCollector(f.srv.URL, "local")
+	m := mustCollect(t, v)
+	if m.KVCacheUsage != 0.42 {
+		t.Fatalf("kv cache usage = %v, want 0.42", m.KVCacheUsage)
+	}
+
+	f.body.Store("vllm:num_requests_running 1.0\nvllm:kv_cache_usage_perc 0.77\n")
+	m = mustCollect(t, v)
+	if m.KVCacheUsage != 0.77 {
+		t.Fatalf("kv cache usage = %v, want 0.77", m.KVCacheUsage)
+	}
+}

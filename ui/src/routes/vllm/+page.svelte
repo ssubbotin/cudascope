@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { onMessage, connected } from '$lib/stores/websocket';
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
-	import { latestVLLM, fetchVLLMHistory, parseRangeSeconds } from '$lib/stores/metrics';
+	import { latestVLLM, fetchVLLMHistory, parseRangeSeconds, isLiveRange, appendPoint } from '$lib/stores/metrics';
 	import type { VLLMMetrics } from '$lib/stores/metrics';
 	import { utilColor } from '$lib/utils/format';
 
@@ -21,7 +22,26 @@
 		xMax = Math.floor(Date.now() / 1000);
 		historyData = await fetchVLLMHistory(range);
 		loading = false;
+		historyLoaded = true;
+		setupRefresh();
 	}
+
+	let liveTail = $derived(isLiveRange(selectedRange));
+
+	const stopListening = onMessage((data: any) => {
+		if (!liveTail || data.type !== 'vllm_metrics' || !data.vllm) return;
+		historyData = appendPoint(historyData, data.vllm, parseRangeSeconds(selectedRange));
+		xMax = Math.floor(Date.now() / 1000);
+	});
+
+	// Declared here rather than reusing the mount flag below: this callback
+	// fires the moment it subscribes, before that declaration has run.
+	let wasConnected = true;
+	let historyLoaded = false;
+	const stopWatchingConnection = connected.subscribe((isConnected) => {
+		if (isConnected && !wasConnected && historyLoaded) loadHistory(selectedRange, true);
+		wasConnected = isConnected;
+	});
 
 	let ts = $derived(historyData.map((m) => m.ts));
 	const SYNC = 'vllm-detail';
@@ -71,9 +91,8 @@
 
 	function setupRefresh() {
 		clearInterval(refreshInterval);
-		if (autoRefresh) {
-			refreshInterval = setInterval(() => loadHistory(selectedRange, true), 10000);
-		}
+		if (!autoRefresh || liveTail) return;
+		refreshInterval = setInterval(() => loadHistory(selectedRange, true), 60000);
 	}
 
 	$effect(() => {
@@ -86,6 +105,8 @@
 
 	onDestroy(() => {
 		clearInterval(refreshInterval);
+		stopListening();
+		stopWatchingConnection();
 	});
 
 	function handleRefreshToggle(enabled: boolean) {

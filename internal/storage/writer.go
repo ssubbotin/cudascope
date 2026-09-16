@@ -21,11 +21,13 @@ func (db *DB) WriteGPUMetrics(metrics []collector.GPUMetrics) error {
 
 	seen := make(map[string]struct{})
 
-	stmt, err := tx.Prepare(`INSERT INTO gpu_metrics_raw
+	// OR REPLACE because a buffered agent can resend a batch the hub already
+	// stored: the unique index turns the duplicate into an overwrite.
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO gpu_metrics_raw
 		(ts, node_id, gpu_id, gpu_util, mem_util, mem_used, temperature, fan_speed,
 		 power_draw, power_limit, clock_gfx, clock_mem, pcie_tx, pcie_rx,
-		 pstate, encoder_util, decoder_util)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 pstate, encoder_util, decoder_util, throttle_reasons, ecc_corrected, ecc_uncorrected)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
@@ -43,6 +45,7 @@ func (db *DB) WriteGPUMetrics(metrics []collector.GPUMetrics) error {
 			m.Temperature, m.FanSpeed, m.PowerDraw, m.PowerLimit,
 			m.ClockGfx, m.ClockMem, m.PCIeTx, m.PCIeRx,
 			m.PState, m.EncoderUtil, m.DecoderUtil,
+			m.ThrottleReasons, m.EccCorrected, m.EccUncorrected,
 		)
 		if err != nil {
 			return fmt.Errorf("exec: %w", err)
@@ -64,7 +67,7 @@ func (db *DB) WriteHostMetrics(m *collector.HostMetrics) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	_, err := db.conn.Exec(`INSERT INTO host_metrics_raw
+	_, err := db.conn.Exec(`INSERT OR REPLACE INTO host_metrics_raw
 		(ts, node_id, cpu_percent, mem_used, mem_total, disk_used, disk_total,
 		 net_rx, net_tx, load_1m, load_5m, load_15m)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -95,7 +98,7 @@ func (db *DB) WriteGPUProcesses(procs []collector.GPUProcess) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT INTO gpu_processes (ts, node_id, gpu_id, pid, name, gpu_mem) VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO gpu_processes (ts, node_id, gpu_id, pid, name, gpu_mem) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -119,7 +122,7 @@ func (db *DB) WriteVLLMMetrics(m *collector.VLLMMetrics) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	_, err := db.conn.Exec(`INSERT INTO vllm_metrics_raw
+	_, err := db.conn.Exec(`INSERT OR REPLACE INTO vllm_metrics_raw
 		(ts, node_id, model_name, requests_running, requests_waiting, kv_cache_usage,
 		 generation_tokens_total, prompt_tokens_total, ttft_avg, tpot_avg,
 		 token_throughput, prefix_cache_hit_rate, num_preemptions)
@@ -139,10 +142,13 @@ func (db *DB) RegisterGPUDevices(nodeID string, devices []collector.GPUDevice) e
 
 	now := time.Now().Unix()
 	for _, d := range devices {
-		_, err := db.conn.Exec(`INSERT INTO gpu_devices (node_id, gpu_id, uuid, name, mem_total, driver_ver, first_seen)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(node_id, gpu_id) DO UPDATE SET name=excluded.name, mem_total=excluded.mem_total, driver_ver=excluded.driver_ver, uuid=excluded.uuid`,
-			nodeID, d.ID, d.UUID, d.Name, d.MemTotal, d.DriverVer, now,
+		_, err := db.conn.Exec(`INSERT INTO gpu_devices
+			(node_id, gpu_id, uuid, name, mem_total, driver_ver, first_seen, ecc_supported, throttle_supported)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(node_id, gpu_id) DO UPDATE SET name=excluded.name, mem_total=excluded.mem_total,
+				driver_ver=excluded.driver_ver, uuid=excluded.uuid,
+				ecc_supported=excluded.ecc_supported, throttle_supported=excluded.throttle_supported`,
+			nodeID, d.ID, d.UUID, d.Name, d.MemTotal, d.DriverVer, now, d.EccSupported, d.ThrottleSupported,
 		)
 		if err != nil {
 			return fmt.Errorf("register device %d: %w", d.ID, err)

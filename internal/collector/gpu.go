@@ -2,6 +2,7 @@ package collector
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -13,6 +14,12 @@ import (
 type GPUCollector struct {
 	devices []nvml.Device
 	info    []GPUDevice
+
+	// procError remembers that process enumeration is failing, so the cause
+	// is logged on the transition rather than every tick. Without it a
+	// process list that is empty because NVML refuses the call looks exactly
+	// like a GPU nobody is using.
+	procError bool
 }
 
 // NewGPUCollector initializes NVML and enumerates GPU devices.
@@ -46,11 +53,13 @@ func NewGPUCollector() (*GPUCollector, error) {
 		memInfo, _ := dev.GetMemoryInfo()
 
 		gc.info[i] = GPUDevice{
-			ID:        i,
-			UUID:      uuid,
-			Name:      name,
-			MemTotal:  memInfo.Total / (1024 * 1024),
-			DriverVer: driverVer,
+			ID:                i,
+			UUID:              uuid,
+			Name:              name,
+			MemTotal:          memInfo.Total / (1024 * 1024),
+			DriverVer:         driverVer,
+			EccSupported:      supportsECC(dev),
+			ThrottleSupported: supportsThrottleReasons(dev),
 		}
 	}
 
@@ -76,6 +85,22 @@ type gpuDevice interface {
 	GetPerformanceState() (nvml.Pstates, nvml.Return)
 	GetEncoderUtilization() (uint32, uint32, nvml.Return)
 	GetDecoderUtilization() (uint32, uint32, nvml.Return)
+	GetCurrentClocksThrottleReasons() (uint64, nvml.Return)
+	GetTotalEccErrors(nvml.MemoryErrorType, nvml.EccCounterType) (uint64, nvml.Return)
+}
+
+// supportsECC and supportsThrottleReasons ask the card once, at startup.
+// Consumer cards answer ERROR_NOT_SUPPORTED to the ECC calls for ever, and
+// storing their zeros as "no errors" would be a clean bill of health nobody
+// measured.
+func supportsECC(dev gpuDevice) bool {
+	_, ret := dev.GetTotalEccErrors(nvml.MEMORY_ERROR_TYPE_CORRECTED, nvml.AGGREGATE_ECC)
+	return ret == nvml.SUCCESS
+}
+
+func supportsThrottleReasons(dev gpuDevice) bool {
+	_, ret := dev.GetCurrentClocksThrottleReasons()
+	return ret == nvml.SUCCESS
 }
 
 // Collect reads current metrics from all GPUs. Devices that answered nothing
@@ -175,6 +200,21 @@ func collectDevice(dev gpuDevice, id int, now int64) (GPUMetrics, bool) {
 		m.DecoderUtil = float64(util)
 	}
 
+	if reasons, ret := dev.GetCurrentClocksThrottleReasons(); ret == nvml.SUCCESS {
+		ok = true
+		m.ThrottleReasons = reasons
+	}
+
+	if count, ret := dev.GetTotalEccErrors(nvml.MEMORY_ERROR_TYPE_CORRECTED, nvml.AGGREGATE_ECC); ret == nvml.SUCCESS {
+		ok = true
+		m.EccCorrected = count
+	}
+
+	if count, ret := dev.GetTotalEccErrors(nvml.MEMORY_ERROR_TYPE_UNCORRECTED, nvml.AGGREGATE_ECC); ret == nvml.SUCCESS {
+		ok = true
+		m.EccUncorrected = count
+	}
+
 	return m, ok
 }
 
@@ -183,9 +223,12 @@ func (gc *GPUCollector) CollectProcesses() []GPUProcess {
 	now := time.Now().Unix()
 	var procs []GPUProcess
 
+	failed := 0
 	for i, dev := range gc.devices {
 		infos, ret := dev.GetComputeRunningProcesses()
 		if ret != nvml.SUCCESS {
+			failed++
+			gc.reportProcessFailure(ret)
 			continue
 		}
 		for _, info := range infos {
@@ -202,6 +245,7 @@ func (gc *GPUCollector) CollectProcesses() []GPUProcess {
 		// Also check graphics processes
 		gfxInfos, ret := dev.GetGraphicsRunningProcesses()
 		if ret != nvml.SUCCESS {
+			gc.reportProcessFailure(ret)
 			continue
 		}
 		for _, info := range gfxInfos {
@@ -227,7 +271,24 @@ func (gc *GPUCollector) CollectProcesses() []GPUProcess {
 		}
 	}
 
+	if failed == 0 && gc.procError {
+		gc.procError = false
+		log.Printf("GPU process enumeration works again")
+	}
 	return procs
+}
+
+// reportProcessFailure logs the first failure of a run of them. Enumeration
+// commonly fails inside a container that does not share the host PID
+// namespace, and silence about it reads on the dashboard as a GPU with
+// nothing running on it.
+func (gc *GPUCollector) reportProcessFailure(ret nvml.Return) {
+	if gc.procError {
+		return
+	}
+	gc.procError = true
+	log.Printf("cannot list GPU processes: %v (a container needs the host PID namespace for this)",
+		nvml.ErrorString(ret))
 }
 
 // Shutdown cleans up NVML.

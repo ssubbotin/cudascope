@@ -1,14 +1,15 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { onDestroy } from 'svelte';
+	import { onMessage, connected } from '$lib/stores/websocket';
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import ProcessList from '$lib/components/ProcessList.svelte';
-	import { devices, latestGPU, processes, fetchGPUHistory, gpuKey, parseRangeSeconds } from '$lib/stores/metrics';
+	import { devices, latestGPU, processes, fetchGPUHistory, gpuKey, parseRangeSeconds, isLiveRange, appendPoint } from '$lib/stores/metrics';
 	import type { GPUMetrics } from '$lib/stores/metrics';
-	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor } from '$lib/utils/format';
+	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor, throttleReasonNames, isThrottled } from '$lib/utils/format';
 
-	let gpuId = $derived(parseInt($page.params.id));
+	let gpuId = $derived(parseInt($page.params.id ?? '0'));
 	let nodeId = $derived($page.url.searchParams.get('node') || 'local');
 	let device = $derived($devices.find((d) => d.id === gpuId && d.node_id === nodeId));
 	let metrics = $derived($latestGPU.find((g) => g.gpu_id === gpuId && (g.node_id || 'local') === nodeId));
@@ -29,7 +30,37 @@
 		xMax = Math.floor(Date.now() / 1000);
 		historyData = await fetchGPUHistory(gpuId, range, nodeId);
 		loading = false;
+		historyLoaded = true;
+		setupRefresh();
 	}
+
+	// An hour or less is drawn from raw samples, which is what the websocket
+	// carries, so the chart follows the stream instead of refetching.
+	let liveTail = $derived(isLiveRange(selectedRange));
+
+	const stopListening = onMessage((data: any) => {
+		if (!liveTail || data.type !== 'gpu_metrics' || !data.gpus) return;
+		if ((data.node_id || 'local') !== nodeId) return;
+
+		const sample = data.gpus.find((g: GPUMetrics) => g.gpu_id === gpuId);
+		if (!sample) return;
+
+		historyData = appendPoint(historyData, { ...sample, node_id: nodeId }, parseRangeSeconds(selectedRange));
+		xMax = Math.floor(Date.now() / 1000);
+	});
+
+	// A dropped connection leaves a gap the stream cannot fill.
+	// Declared here rather than reusing the mount flag below: this callback
+	// fires the moment it subscribes, before that declaration has run.
+	let wasConnected = true;
+	let historyLoaded = false;
+	const stopWatchingConnection = connected.subscribe((isConnected) => {
+		if (isConnected && !wasConnected && historyLoaded) loadHistory(selectedRange, true);
+		wasConnected = isConnected;
+	});
+
+	let throttleReasons = $derived(metrics ? throttleReasonNames(metrics.throttle_reasons) : []);
+	let throttled = $derived(!!metrics && isThrottled(metrics.throttle_reasons));
 
 	let ts = $derived(historyData.map((m) => m.ts));
 	const SYNC = 'gpu-detail';
@@ -72,9 +103,9 @@
 
 	function setupRefresh() {
 		clearInterval(refreshInterval);
-		if (autoRefresh) {
-			refreshInterval = setInterval(() => loadHistory(selectedRange, true), 10000);
-		}
+		if (!autoRefresh || liveTail) return;
+		// Wider ranges are drawn from rollups, which change once a minute.
+		refreshInterval = setInterval(() => loadHistory(selectedRange, true), 60000);
 	}
 
 	// Wait for device to be populated (fetchStatus in layout is async)
@@ -88,6 +119,8 @@
 
 	onDestroy(() => {
 		clearInterval(refreshInterval);
+		stopListening();
+		stopWatchingConnection();
 	});
 
 	function handleRefreshToggle(enabled: boolean) {
@@ -155,6 +188,43 @@
 				<div class="text-xs text-text-muted">PState</div>
 				<div class="text-xl font-mono font-semibold text-green">P{metrics.pstate}</div>
 			</div>
+		</div>
+	{/if}
+
+	{#if metrics && device && (device.throttle_supported || device.ecc_supported)}
+		<div class="bg-bg-card border border-border rounded-xl p-5 space-y-3">
+			<h3 class="text-xs font-medium text-text-muted">Health</h3>
+
+			{#if device.throttle_supported}
+				<div class="flex flex-wrap items-center gap-2 text-sm">
+					<span class="text-text-muted">Clocks:</span>
+					{#if throttleReasons.length === 0}
+						<span class="text-green">unconstrained</span>
+					{:else}
+						{#each throttleReasons as reason}
+							<span
+								class="text-xs px-2 py-0.5 rounded-full border {throttled
+									? 'bg-orange/10 text-orange border-orange/20'
+									: 'bg-bg-secondary text-text-muted border-border'}"
+							>
+								{reason}
+							</span>
+						{/each}
+					{/if}
+				</div>
+			{/if}
+
+			{#if device.ecc_supported}
+				<div class="flex flex-wrap items-center gap-4 text-sm">
+					<span class="text-text-muted">Memory errors (lifetime):</span>
+					<span class="text-text-primary">corrected {metrics.ecc_corrected}</span>
+					<span class={metrics.ecc_uncorrected > 0 ? 'text-red' : 'text-text-primary'}>
+						uncorrected {metrics.ecc_uncorrected}
+					</span>
+				</div>
+			{:else}
+				<p class="text-xs text-text-muted">This card does not report ECC counters.</p>
+			{/if}
 		</div>
 	{/if}
 

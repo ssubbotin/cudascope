@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -12,65 +13,101 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sergey/cudascope/internal/alerts"
 	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/storage"
 )
 
-// AlertConfig holds configurable alert thresholds.
-type AlertConfig struct {
-	TempMax int // °C, 0 = disabled
-	GPUUtil int // %, 0 = disabled
-	MemUtil int // %, 0 = disabled
-}
+// Options configures the API server. It is a struct because the
+// constructor had grown to seven positional arguments, three of them empty
+// strings at most call sites.
+type Options struct {
+	Store  *storage.DB
+	Hub    *Hub
+	Alerts *alerts.Engine // nil in agent mode: no thresholds are judged here
 
-// Alert represents an active alert.
-type Alert struct {
-	NodeID string  `json:"node_id"`
-	GPUID  int     `json:"gpu_id"`
-	Metric string  `json:"metric"` // "temperature", "gpu_util", "mem_util"
-	Value  float64 `json:"value"`
-	Thresh float64 `json:"threshold"`
+	UIFS    fs.FS  // embedded UI, nil when it was not built in
+	DevMode bool   // serve the UI from the filesystem
+	UIDir   string // where, in dev mode
+	Auth    string // "user:password", empty disables
+
+	// IngestToken is the secret agents present when pushing metrics. Empty
+	// falls back to Auth, and with neither set the ingest routes are open.
+	IngestToken string
+
+	// CORSOrigin is the single origin allowed to call this API from another
+	// site. Empty sends no cross-origin headers at all, which is what a
+	// dashboard served by this same process needs.
+	CORSOrigin string
+
+	// StateInterval is how often the state snapshot is resent even when
+	// nothing changed. Zero selects the default.
+	StateInterval time.Duration
 }
 
 // Server is the HTTP API server.
 type Server struct {
-	store    *storage.DB
-	hub      *Hub
-	mux      *http.ServeMux
-	uiFS     fs.FS // embedded or filesystem UI
-	devMode  bool
-	uiDir    string
-	authUser string // basic auth (empty = disabled)
-	authPass string
-	alerts   AlertConfig
+	store   *storage.DB
+	hub     *Hub
+	alerts  *alerts.Engine
+	mux     *http.ServeMux
+	uiFS    fs.FS // embedded or filesystem UI
+	devMode bool
+	uiDir   string
+
+	authUser    string // basic auth (empty = disabled)
+	authPass    string
+	ingestToken string
+	corsOrigin  string
 
 	// collectStaleAfter makes healthz fail when metrics stop arriving.
 	// Zero disables the check.
 	collectStaleAfter time.Duration
 	collectNodeID     string
 
-	alertsMu     sync.RWMutex
-	activeAlerts []Alert
+	stateInterval time.Duration
+	stateTrigger  chan struct{}
+
+	refusedMu sync.Mutex
+	refusedAt time.Time
 }
 
 // NewServer creates a new API server.
-func NewServer(store *storage.DB, hub *Hub, uiFS fs.FS, devMode bool, uiDir string, auth string, alertCfg AlertConfig) *Server {
+func NewServer(opts Options) *Server {
 	s := &Server{
-		store:   store,
-		hub:     hub,
-		mux:     http.NewServeMux(),
-		uiFS:    uiFS,
-		devMode: devMode,
-		uiDir:   uiDir,
-		alerts:  alertCfg,
+		store:         opts.Store,
+		hub:           opts.Hub,
+		alerts:        opts.Alerts,
+		mux:           http.NewServeMux(),
+		uiFS:          opts.UIFS,
+		devMode:       opts.DevMode,
+		uiDir:         opts.UIDir,
+		stateInterval: opts.StateInterval,
+		stateTrigger:  make(chan struct{}, 1),
+		ingestToken:   opts.IngestToken,
+		corsOrigin:    opts.CORSOrigin,
 	}
-	if auth != "" {
-		if parts := strings.SplitN(auth, ":", 2); len(parts) == 2 {
-			s.authUser = parts[0]
-			s.authPass = parts[1]
-			log.Printf("basic auth enabled for user %q", s.authUser)
-		}
+	if s.stateInterval <= 0 {
+		s.stateInterval = defaultStateInterval
 	}
+
+	if opts.Auth != "" {
+		// config.Validate refuses a value without a colon before anything is
+		// served, so a malformed one cannot reach this point.
+		user, pass, _ := strings.Cut(opts.Auth, ":")
+		s.authUser, s.authPass = user, pass
+		log.Printf("basic auth enabled for user %q", s.authUser)
+	}
+	if s.ingestToken != "" {
+		log.Printf("ingest requires a token")
+	}
+
+	if s.alerts != nil {
+		// Subscribed here rather than inside RunStateBroadcast so a change
+		// that lands before that goroutine starts still reaches it.
+		s.alerts.OnChange(s.notifyState)
+	}
+
 	s.routes()
 	return s
 }
@@ -85,6 +122,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/vllm/metrics", s.handleVLLMMetrics)
 	s.mux.HandleFunc("/api/v1/vllm/status", s.handleVLLMStatus)
 	s.mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
+	s.mux.HandleFunc("/api/v1/alerts/history", s.handleAlertHistory)
 	s.mux.HandleFunc("/api/v1/ws", s.hub.HandleWS)
 	s.mux.HandleFunc("/api/v1/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/metrics", s.handlePrometheus)
@@ -95,6 +133,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/ingest/host-metrics", s.handleIngestHostMetrics)
 	s.mux.HandleFunc("/api/v1/ingest/gpu-processes", s.handleIngestGPUProcesses)
 	s.mux.HandleFunc("/api/v1/ingest/vllm-metrics", s.handleIngestVLLMMetrics)
+	s.mux.HandleFunc("/api/v1/ingest/xid", s.handleIngestXid)
 
 	// Serve UI
 	if s.devMode {
@@ -143,30 +182,97 @@ func (s *Server) HTTPServer(port int) *http.Server {
 
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// CORS
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == "OPTIONS" {
+		// Cross-origin access is off unless an origin was named. The UI is
+		// served by this same process, so the wildcard that used to be here
+		// bought nothing and let any page in the browser read the metrics of
+		// a dashboard it could reach.
+		if s.corsOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		}
+		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// Basic auth (skip healthz and ingest endpoints)
-		if s.authUser != "" {
-			path := r.URL.Path
-			if path != "/api/v1/healthz" && !strings.HasPrefix(path, "/api/v1/ingest/") {
-				user, pass, ok := r.BasicAuth()
-				if !ok || user != s.authUser || pass != s.authPass {
-					w.Header().Set("WWW-Authenticate", `Basic realm="CudaScope"`)
-					http.Error(w, "Unauthorized", http.StatusUnauthorized)
-					return
-				}
+		path := r.URL.Path
+		switch {
+		case path == "/api/v1/healthz":
+			// Always reachable: a health probe carries no credentials.
+
+		case strings.HasPrefix(path, "/api/v1/ingest/"):
+			if !s.ingestAllowed(r) {
+				s.reportIngestRefused(r)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+		default:
+			if s.authUser != "" && !s.basicAuthOK(r) {
+				w.Header().Set("WWW-Authenticate", `Basic realm="CudaScope"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
 			}
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ingestAllowed reports whether this request may write metrics.
+//
+// A token is the intended way. Falling back to the dashboard credentials
+// covers the surprise that used to be here: turning on --auth protected
+// every read and left every write open.
+func (s *Server) ingestAllowed(r *http.Request) bool {
+	if s.ingestToken != "" {
+		return secretMatches(bearerToken(r), s.ingestToken)
+	}
+	if s.authUser != "" {
+		return s.basicAuthOK(r)
+	}
+	return true
+}
+
+// reportIngestRefused logs a turned-away agent, at most once a minute.
+//
+// An upgrade that starts requiring credentials on routes that never needed
+// them stops metrics arriving, and without this the hub would show a node
+// quietly going offline with nothing anywhere to explain it.
+func (s *Server) reportIngestRefused(r *http.Request) {
+	s.refusedMu.Lock()
+	defer s.refusedMu.Unlock()
+
+	if time.Since(s.refusedAt) < time.Minute {
+		return
+	}
+	s.refusedAt = time.Now()
+	log.Printf("refused ingest from %s: credentials missing or wrong (agents need --ingest-token or the --auth credentials)",
+		r.RemoteAddr)
+}
+
+func (s *Server) basicAuthOK(r *http.Request) bool {
+	user, pass, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	return secretMatches(user, s.authUser) && secretMatches(pass, s.authPass)
+}
+
+func bearerToken(r *http.Request) string {
+	header := r.Header.Get("Authorization")
+	if value, ok := strings.CutPrefix(header, "Bearer "); ok {
+		return value
+	}
+	return ""
+}
+
+// secretMatches compares in constant time, so the answer does not depend on
+// how many leading characters a guess got right.
+func secretMatches(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -237,23 +343,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		procs = filterProcByNode(procs, nodeFilter)
 	}
 
-	// Check alerts against latest GPU metrics
-	s.checkAlerts(gpus)
-
-	s.alertsMu.RLock()
-	alerts := s.activeAlerts
-	s.alertsMu.RUnlock()
-
 	resp := map[string]any{
 		"nodes":     nodes,
 		"devices":   devices,
 		"gpus":      gpus,
 		"hosts":     hosts,
 		"processes": procs,
-		"alerts":    alerts,
-	}
-	if alerts == nil {
-		resp["alerts"] = []struct{}{}
+		"alerts":    s.openAlerts(),
 	}
 
 	// Include latest vLLM metrics if available
@@ -453,7 +549,9 @@ func (s *Server) handleIngestGPUMetrics(w http.ResponseWriter, r *http.Request) 
 	if len(metrics) > 0 {
 		nodeID := metrics[0].NodeID
 		s.store.UpdateNodeSeen(nodeID)
-		s.checkAlerts(metrics)
+		if s.alerts != nil {
+			s.alerts.Observe(metrics)
+		}
 
 		s.hub.Broadcast(collector.Snapshot{
 			Type:      "gpu_metrics",
@@ -556,6 +654,36 @@ func (s *Server) handleIngestVLLMMetrics(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleIngestXid records a driver fault reported by an agent. Xid errors
+// arrive as events rather than samples, so they take their own route.
+func (s *Server) handleIngestXid(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		NodeID string `json:"node_id"`
+		GPUID  int    `json:"gpu_id"`
+		Xid    uint64 `json:"xid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		httpError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if payload.NodeID == "" {
+		httpError(w, "node_id required", http.StatusBadRequest)
+		return
+	}
+
+	s.store.UpdateNodeSeen(payload.NodeID)
+	if s.alerts != nil {
+		s.alerts.NoteXid(payload.NodeID, payload.GPUID, payload.Xid)
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 // --- Prometheus ---
 
 func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
@@ -579,7 +707,8 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		}
 		id := strconv.Itoa(g.GPUID)
 		name := nameMap[fmt.Sprintf("%s:%d", node, g.GPUID)]
-		labels := fmt.Sprintf(`node_id="%s",gpu_id="%s",gpu_name="%s"`, node, id, name)
+		labels := fmt.Sprintf(`node_id="%s",gpu_id="%s",gpu_name="%s"`,
+			escapeLabel(node), escapeLabel(id), escapeLabel(name))
 
 		fmt.Fprintf(w, "cudascope_gpu_utilization_percent{%s} %.1f\n", labels, g.GPUUtil)
 		fmt.Fprintf(w, "cudascope_gpu_memory_used_mib{%s} %d\n", labels, g.MemUsed)
@@ -595,6 +724,10 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "cudascope_gpu_pstate{%s} %d\n", labels, g.PState)
 		fmt.Fprintf(w, "cudascope_gpu_encoder_util_percent{%s} %.1f\n", labels, g.EncoderUtil)
 		fmt.Fprintf(w, "cudascope_gpu_decoder_util_percent{%s} %.1f\n", labels, g.DecoderUtil)
+		fmt.Fprintf(w, "cudascope_gpu_throttle_reasons{%s} %d\n", labels, g.ThrottleReasons)
+		fmt.Fprintf(w, "cudascope_gpu_throttled{%s} %d\n", labels, boolValue(g.Throttled()))
+		fmt.Fprintf(w, "cudascope_gpu_ecc_corrected_total{%s} %d\n", labels, g.EccCorrected)
+		fmt.Fprintf(w, "cudascope_gpu_ecc_uncorrected_total{%s} %d\n", labels, g.EccUncorrected)
 	}
 
 	for _, h := range hosts {
@@ -602,7 +735,7 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		if node == "" {
 			node = "local"
 		}
-		labels := fmt.Sprintf(`node_id="%s"`, node)
+		labels := fmt.Sprintf(`node_id="%s"`, escapeLabel(node))
 		fmt.Fprintf(w, "cudascope_host_cpu_percent{%s} %.1f\n", labels, h.CPUPercent)
 		fmt.Fprintf(w, "cudascope_host_memory_used_bytes{%s} %d\n", labels, h.MemUsed)
 		fmt.Fprintf(w, "cudascope_host_memory_total_bytes{%s} %d\n", labels, h.MemTotal)
@@ -612,53 +745,84 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// boolValue renders a flag the way Prometheus expects one.
+func boolValue(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+// escapeLabel makes a value safe to place inside a Prometheus label. An
+// unescaped quote ends the value early and leaves the rest of the exposition
+// unparseable, so one oddly named GPU takes every metric down with it.
+func escapeLabel(v string) string {
+	return labelEscaper.Replace(v)
+}
+
+var labelEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`"`, `\"`,
+	"\n", `\n`,
+)
+
 // --- Alerts ---
 
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
-	s.alertsMu.RLock()
-	alerts := s.activeAlerts
-	s.alertsMu.RUnlock()
+	cfg := alerts.Config{}
+	if s.alerts != nil {
+		cfg = s.alerts.Config()
+	}
 
-	resp := map[string]any{
+	writeJSON(w, map[string]any{
 		"config": map[string]int{
-			"temp_max": s.alerts.TempMax,
-			"gpu_util": s.alerts.GPUUtil,
-			"mem_util": s.alerts.MemUtil,
+			"temp_max": cfg.TempMax,
+			"gpu_util": cfg.GPUUtil,
+			"mem_util": cfg.MemUtil,
 		},
-		"alerts": alerts,
-	}
-	if alerts == nil {
-		resp["alerts"] = []struct{}{}
-	}
-	writeJSON(w, resp)
+		"alerts": s.openAlerts(),
+	})
 }
 
-// checkAlerts evaluates current GPU metrics against thresholds.
-func (s *Server) checkAlerts(gpus []collector.GPUMetrics) {
-	if s.alerts.TempMax == 0 && s.alerts.GPUUtil == 0 && s.alerts.MemUtil == 0 {
+// handleAlertHistory serves the journal, newest first.
+func (s *Server) handleAlertHistory(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+
+	events, err := s.store.ListAlertEvents(storage.AlertEventQuery{
+		From:   from,
+		To:     to,
+		NodeID: r.URL.Query().Get("node"),
+		Kind:   r.URL.Query().Get("kind"),
+		Limit:  limit,
+	})
+	if err != nil {
+		httpError(w, "list alert events: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	var alerts []Alert
-	for _, g := range gpus {
-		node := g.NodeID
-		if node == "" {
-			node = "local"
-		}
-		if s.alerts.TempMax > 0 && g.Temperature >= s.alerts.TempMax {
-			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "temperature", Value: float64(g.Temperature), Thresh: float64(s.alerts.TempMax)})
-		}
-		if s.alerts.GPUUtil > 0 && g.GPUUtil >= float64(s.alerts.GPUUtil) {
-			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "gpu_util", Value: g.GPUUtil, Thresh: float64(s.alerts.GPUUtil)})
-		}
-		if s.alerts.MemUtil > 0 && g.MemUtil >= float64(s.alerts.MemUtil) {
-			alerts = append(alerts, Alert{NodeID: node, GPUID: g.GPUID, Metric: "mem_util", Value: g.MemUtil, Thresh: float64(s.alerts.MemUtil)})
-		}
+	if events == nil {
+		events = []alerts.Event{}
 	}
+	writeJSON(w, events)
+}
 
-	s.alertsMu.Lock()
-	s.activeAlerts = alerts
-	s.alertsMu.Unlock()
+// openAlerts is what every caller means by "the alerts": the events open
+// right now, never nil so the JSON carries an empty array.
+func (s *Server) openAlerts() []alerts.Event {
+	if s.alerts == nil {
+		return []alerts.Event{}
+	}
+	open := s.alerts.Active()
+	if open == nil {
+		return []alerts.Event{}
+	}
+	return open
 }
 
 // --- Helpers ---

@@ -12,11 +12,11 @@ import (
 
 // HostCollector reads system-level metrics.
 type HostCollector struct {
-	nodeID     string
-	prevNetRx  uint64
-	prevNetTx  uint64
-	prevNetTs  time.Time
-	firstRead  bool
+	nodeID    string
+	prevNetRx uint64
+	prevNetTx uint64
+	prevNetTs time.Time
+	firstRead bool
 }
 
 // NewHostCollector creates a new host metric collector.

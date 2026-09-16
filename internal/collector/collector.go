@@ -20,6 +20,13 @@ type BroadcastSink interface {
 	Broadcast(snap Snapshot)
 }
 
+// AlertObserver evaluates samples against thresholds. It lives on the
+// collection path so that thresholds are checked on every reading, whether
+// or not anybody has the dashboard open.
+type AlertObserver interface {
+	Observe(metrics []GPUMetrics)
+}
+
 // gpuSource, hostSource and vllmSource are the metric sources the collector
 // drives. They exist so the loop can be tested without a GPU.
 type gpuSource interface {
@@ -35,6 +42,20 @@ type vllmSource interface {
 	Collect() (*VLLMMetrics, error)
 }
 
+// defaultProcInterval is how often the process list is enumerated when
+// nothing else is configured. It is deliberately slower than the metric
+// tick: the list changes when a job starts or ends, while enumerating it
+// costs a /proc read per process and a stored row per process.
+const defaultProcInterval = 5 * time.Second
+
+// defaultGPUInterval, defaultHostInterval and defaultVLLMInterval back up a
+// source whose interval was never set.
+const (
+	defaultGPUInterval  = time.Second
+	defaultHostInterval = 5 * time.Second
+	defaultVLLMInterval = 5 * time.Second
+)
+
 // Collector orchestrates GPU and host metric collection.
 type Collector struct {
 	gpu       gpuSource
@@ -42,9 +63,11 @@ type Collector struct {
 	vllm      vllmSource
 	storage   MetricSink
 	broadcast BroadcastSink
+	alerts    AlertObserver
 
 	gpuInterval  time.Duration
 	hostInterval time.Duration
+	procInterval time.Duration
 	vllmInterval time.Duration
 
 	// gpuSilent tracks whether the GPUs have stopped answering, so the
@@ -52,8 +75,12 @@ type Collector struct {
 	gpuSilent bool
 }
 
-// New creates a new Collector.
-func New(gpu *GPUCollector, host *HostCollector, storage MetricSink, broadcast BroadcastSink, gpuInterval, hostInterval time.Duration) *Collector {
+// New creates a new Collector. A zero procInterval falls back to
+// defaultProcInterval.
+func New(gpu *GPUCollector, host *HostCollector, storage MetricSink, broadcast BroadcastSink, gpuInterval, hostInterval, procInterval time.Duration) *Collector {
+	if procInterval <= 0 {
+		procInterval = defaultProcInterval
+	}
 	return &Collector{
 		gpu:          gpu,
 		host:         host,
@@ -61,7 +88,18 @@ func New(gpu *GPUCollector, host *HostCollector, storage MetricSink, broadcast B
 		broadcast:    broadcast,
 		gpuInterval:  gpuInterval,
 		hostInterval: hostInterval,
+		procInterval: procInterval,
 	}
+}
+
+// SetAlerts configures threshold evaluation. Agent mode leaves it unset:
+// agents push raw samples and the hub, which holds the thresholds, judges
+// them.
+func (c *Collector) SetAlerts(observer AlertObserver) {
+	if observer == nil {
+		return
+	}
+	c.alerts = observer
 }
 
 // SetVLLM configures vLLM metrics collection.
@@ -92,18 +130,25 @@ func (c *Collector) Run(ctx context.Context) {
 		}()
 	}
 
-	start(c.gpuInterval, c.collectGPU)
-	start(c.hostInterval, c.collectHost)
+	start(atLeast(c.gpuInterval, defaultGPUInterval), c.collectGPU)
+	start(atLeast(c.hostInterval, defaultHostInterval), c.collectHost)
+	start(atLeast(c.procInterval, defaultProcInterval), c.collectProcesses)
 
 	if c.vllm != nil {
-		interval := c.vllmInterval
-		if interval == 0 {
-			interval = 5 * time.Second
-		}
-		start(interval, c.collectVLLM)
+		start(atLeast(c.vllmInterval, defaultVLLMInterval), c.collectVLLM)
 	}
 
 	wg.Wait()
+}
+
+// atLeast keeps a ticker from being built with a zero interval, which
+// panics and takes the whole process down. An unset interval is a
+// configuration gap, and falling back to a default beats dying.
+func atLeast(d, fallback time.Duration) time.Duration {
+	if d <= 0 {
+		return fallback
+	}
+	return d
 }
 
 // runTicker calls fn on every tick until ctx is done. A slow fn only costs
@@ -143,6 +188,10 @@ func (c *Collector) collectGPU() {
 		log.Printf("error writing GPU metrics: %v", err)
 	}
 
+	if c.alerts != nil {
+		c.alerts.Observe(metrics)
+	}
+
 	if c.broadcast != nil {
 		c.broadcast.Broadcast(Snapshot{
 			Type:      "gpu_metrics",
@@ -150,20 +199,25 @@ func (c *Collector) collectGPU() {
 			GPUs:      metrics,
 		})
 	}
+}
 
-	// Collect processes alongside GPU metrics (less frequent internally)
+// collectProcesses runs on its own loop, at its own interval.
+func (c *Collector) collectProcesses() {
 	procs := c.gpu.CollectProcesses()
-	if len(procs) > 0 {
-		if err := c.storage.WriteGPUProcesses(procs); err != nil {
-			log.Printf("error writing GPU processes: %v", err)
-		}
-		if c.broadcast != nil {
-			c.broadcast.Broadcast(Snapshot{
-				Type:      "gpu_processes",
-				Timestamp: time.Now().Unix(),
-				Processes: procs,
-			})
-		}
+	if len(procs) == 0 {
+		return
+	}
+
+	if err := c.storage.WriteGPUProcesses(procs); err != nil {
+		log.Printf("error writing GPU processes: %v", err)
+	}
+
+	if c.broadcast != nil {
+		c.broadcast.Broadcast(Snapshot{
+			Type:      "gpu_processes",
+			Timestamp: time.Now().Unix(),
+			Processes: procs,
+		})
 	}
 }
 

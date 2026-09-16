@@ -9,7 +9,7 @@ import (
 
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
-	db, err := Open(t.TempDir())
+	db, err := Open(t.TempDir(), Options{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

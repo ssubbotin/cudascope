@@ -49,6 +49,16 @@ func (f fakeDevice) GetEncoderUtilization() (uint32, uint32, nvml.Return) {
 func (f fakeDevice) GetDecoderUtilization() (uint32, uint32, nvml.Return) {
 	return 0, 0, f.ret("GetDecoderUtilization")
 }
+func (f fakeDevice) GetCurrentClocksThrottleReasons() (uint64, nvml.Return) {
+	return nvml.ClocksThrottleReasonSwThermalSlowdown | nvml.ClocksThrottleReasonSwPowerCap,
+		f.ret("GetCurrentClocksThrottleReasons")
+}
+func (f fakeDevice) GetTotalEccErrors(errorType nvml.MemoryErrorType, _ nvml.EccCounterType) (uint64, nvml.Return) {
+	if errorType == nvml.MEMORY_ERROR_TYPE_CORRECTED {
+		return 12, f.ret("GetTotalEccErrors")
+	}
+	return 3, f.ret("GetTotalEccErrors")
+}
 
 // A driver that answers with errors instead of blocking would otherwise
 // yield a full row of zeros every second: indistinguishable from an idle
@@ -100,5 +110,73 @@ func TestCollectDeviceReadsEveryAnswer(t *testing.T) {
 		m.FanSpeed != 46 || m.PowerDraw != 532 || m.PowerLimit != 600 ||
 		m.ClockGfx != 2685 || m.PCIeTx != 10343 || m.PState != 1 {
 		t.Errorf("fields not read as expected: %+v", m)
+	}
+}
+
+// The first question after a GPU slows down is whether it slowed itself
+// down, and why. Without the throttle mask the dashboard shows the clock
+// dropping and cannot say that the card hit its power cap.
+func TestCollectDeviceReadsThrottleReasons(t *testing.T) {
+	dev := fakeDevice{answers: map[string]bool{"GetCurrentClocksThrottleReasons": true}}
+
+	m, ok := collectDevice(dev, 0, 100)
+	if !ok {
+		t.Fatal("a device that answered the throttle call produced no sample")
+	}
+	want := uint64(nvml.ClocksThrottleReasonSwThermalSlowdown | nvml.ClocksThrottleReasonSwPowerCap)
+	if m.ThrottleReasons != want {
+		t.Fatalf("throttle reasons = %d, want %d", m.ThrottleReasons, want)
+	}
+	if !m.Throttled() {
+		t.Fatal("a mask with reasons in it does not read as throttled")
+	}
+}
+
+func TestIdleIsNotThrottling(t *testing.T) {
+	m := GPUMetrics{ThrottleReasons: nvml.ClocksThrottleReasonGpuIdle}
+	if m.Throttled() {
+		t.Fatal("an idle GPU reads as throttled")
+	}
+}
+
+func TestCollectDeviceReadsEccCounters(t *testing.T) {
+	dev := fakeDevice{answers: map[string]bool{"GetTotalEccErrors": true}}
+
+	m, ok := collectDevice(dev, 0, 100)
+	if !ok {
+		t.Fatal("a device that answered the ECC calls produced no sample")
+	}
+	if m.EccCorrected != 12 || m.EccUncorrected != 3 {
+		t.Fatalf("ecc counters = %d/%d, want 12/3", m.EccCorrected, m.EccUncorrected)
+	}
+}
+
+// Consumer cards do not report ECC at all, and a card that cannot answer
+// must not be charted as a card with no errors.
+func TestADeviceThatCannotReportEccIsNotClaimedToBeClean(t *testing.T) {
+	dev := fakeDevice{answers: map[string]bool{"GetUtilizationRates": true}}
+
+	m, ok := collectDevice(dev, 0, 100)
+	if !ok {
+		t.Fatal("no sample at all")
+	}
+	if m.EccCorrected != 0 || m.EccUncorrected != 0 {
+		t.Fatalf("unsupported ECC produced counts: %+v", m)
+	}
+	if supportsECC(dev) {
+		t.Fatal("a device that refuses the ECC call is reported as supporting it")
+	}
+}
+
+func TestSupportReflectsWhatTheCardAnswers(t *testing.T) {
+	full := fakeDevice{answers: map[string]bool{
+		"GetTotalEccErrors":               true,
+		"GetCurrentClocksThrottleReasons": true,
+	}}
+	if !supportsECC(full) {
+		t.Fatal("a card that answers the ECC call is reported as not supporting it")
+	}
+	if !supportsThrottleReasons(full) {
+		t.Fatal("a card that answers the throttle call is reported as not supporting it")
 	}
 }

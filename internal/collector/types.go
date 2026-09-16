@@ -8,6 +8,12 @@ type GPUDevice struct {
 	Name      string `json:"name"`
 	MemTotal  uint64 `json:"mem_total"` // MiB
 	DriverVer string `json:"driver_ver"`
+
+	// EccSupported and ThrottleSupported record what this card can answer,
+	// asked once at startup. A card that cannot report ECC must not be drawn
+	// as a card with no errors.
+	EccSupported      bool `json:"ecc_supported"`
+	ThrottleSupported bool `json:"throttle_supported"`
 }
 
 // GPUMetrics holds a single snapshot of GPU metrics.
@@ -22,13 +28,54 @@ type GPUMetrics struct {
 	FanSpeed    int     `json:"fan_speed"`
 	PowerDraw   float64 `json:"power_draw"` // W
 	PowerLimit  float64 `json:"power_limit"`
-	ClockGfx    int     `json:"clock_gfx"`  // MHz
-	ClockMem    int     `json:"clock_mem"`   // MHz
-	PCIeTx      int     `json:"pcie_tx"`     // KB/s
-	PCIeRx      int     `json:"pcie_rx"`     // KB/s
+	ClockGfx    int     `json:"clock_gfx"` // MHz
+	ClockMem    int     `json:"clock_mem"` // MHz
+	PCIeTx      int     `json:"pcie_tx"`   // KB/s
+	PCIeRx      int     `json:"pcie_rx"`   // KB/s
 	PState      int     `json:"pstate"`
 	EncoderUtil float64 `json:"encoder_util"`
 	DecoderUtil float64 `json:"decoder_util"`
+
+	// ThrottleReasons is the NVML clocks-throttle bitmask. It answers the
+	// first question asked when a card slows down: whether it slowed itself,
+	// and why.
+	ThrottleReasons uint64 `json:"throttle_reasons"`
+
+	// EccCorrected and EccUncorrected are lifetime counters. Cards that do
+	// not implement ECC report neither, which is why GPUDevice carries
+	// whether this card can answer at all.
+	EccCorrected   uint64 `json:"ecc_corrected"`
+	EccUncorrected uint64 `json:"ecc_uncorrected"`
+}
+
+// throttlingMask covers the reasons that mean the card is being held back.
+// Idle and the two "someone set the clocks" reasons are states, not
+// slowdowns, and reporting them as throttling would make an idle GPU look
+// like a problem.
+const throttlingMask = nvmlThrottleSwPowerCap |
+	nvmlThrottleHwSlowdown |
+	nvmlThrottleSyncBoost |
+	nvmlThrottleSwThermal |
+	nvmlThrottleHwThermal |
+	nvmlThrottleHwPowerBrake
+
+// Named here rather than imported so this file stays free of the NVML
+// package: the values are part of the stored format and the wire format.
+const (
+	nvmlThrottleGpuIdle       = 1
+	nvmlThrottleAppClocks     = 2
+	nvmlThrottleSwPowerCap    = 4
+	nvmlThrottleHwSlowdown    = 8
+	nvmlThrottleSyncBoost     = 16
+	nvmlThrottleSwThermal     = 32
+	nvmlThrottleHwThermal     = 64
+	nvmlThrottleHwPowerBrake  = 128
+	nvmlThrottleDisplayClocks = 256
+)
+
+// Throttled reports whether the card is being held back right now.
+func (m GPUMetrics) Throttled() bool {
+	return m.ThrottleReasons&throttlingMask != 0
 }
 
 // GPUProcess represents a process using the GPU.
@@ -59,19 +106,19 @@ type HostMetrics struct {
 
 // VLLMMetrics holds a snapshot of vLLM inference server metrics.
 type VLLMMetrics struct {
-	NodeID              string  `json:"node_id,omitempty"`
-	Timestamp           int64   `json:"ts"`
-	ModelName           string  `json:"model_name"`
-	RequestsRunning     int     `json:"requests_running"`
-	RequestsWaiting     int     `json:"requests_waiting"`
-	KVCacheUsage        float64 `json:"kv_cache_usage"`          // 0-1
-	GenerationTokensTotal int64 `json:"generation_tokens_total"`
-	PromptTokensTotal   int64   `json:"prompt_tokens_total"`
-	TimeToFirstTokenAvg float64 `json:"ttft_avg"`                // seconds
+	NodeID                string  `json:"node_id,omitempty"`
+	Timestamp             int64   `json:"ts"`
+	ModelName             string  `json:"model_name"`
+	RequestsRunning       int     `json:"requests_running"`
+	RequestsWaiting       int     `json:"requests_waiting"`
+	KVCacheUsage          float64 `json:"kv_cache_usage"` // 0-1
+	GenerationTokensTotal int64   `json:"generation_tokens_total"`
+	PromptTokensTotal     int64   `json:"prompt_tokens_total"`
+	TimeToFirstTokenAvg   float64 `json:"ttft_avg"`              // seconds
 	TimePerOutputTokenAvg float64 `json:"tpot_avg"`              // seconds
-	TokenThroughput     float64 `json:"token_throughput"`        // tok/s
-	PrefixCacheHitRate  float64 `json:"prefix_cache_hit_rate"`   // 0-1
-	NumPreemptions      int64   `json:"num_preemptions"`
+	TokenThroughput       float64 `json:"token_throughput"`      // tok/s
+	PrefixCacheHitRate    float64 `json:"prefix_cache_hit_rate"` // 0-1
+	NumPreemptions        int64   `json:"num_preemptions"`
 }
 
 // Snapshot is a complete point-in-time reading pushed via WebSocket.

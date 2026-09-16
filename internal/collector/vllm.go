@@ -36,6 +36,10 @@ type VLLMCollector struct {
 
 	// modelsRetryAt throttles the /v1/models fallback.
 	modelsRetryAt time.Time
+
+	// missing remembers which fields this server does not publish, so the
+	// gap is reported once instead of on every scrape.
+	missing map[string]bool
 }
 
 // NewVLLMCollector creates a collector that scrapes vLLM's /metrics endpoint.
@@ -49,6 +53,7 @@ func NewVLLMCollector(baseURL, nodeID string) *VLLMCollector {
 		baseURL: baseURL,
 		nodeID:  nodeID,
 		client:  &http.Client{Timeout: 10 * time.Second},
+		missing: make(map[string]bool),
 	}
 }
 
@@ -131,19 +136,31 @@ func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
 		return nil, fmt.Errorf("parse metrics: %w", err)
 	}
 
+	if len(raw) == 0 {
+		// Every field below reads as zero when its key is absent, so a page
+		// carrying no vllm metric at all would be stored as a perfectly idle
+		// engine with an empty cache and a fresh timestamp. The GPU collector
+		// refuses that shape of sample for the same reason.
+		return nil, fmt.Errorf("GET /metrics: no vllm metric in the response")
+	}
+
 	v.resolveModelName(scraped)
 
 	now := time.Now()
 	m := &VLLMMetrics{
-		NodeID:                v.nodeID,
-		Timestamp:             now.Unix(),
-		ModelName:             v.modelName,
-		RequestsRunning:       int(raw["vllm:num_requests_running"]),
-		RequestsWaiting:       int(raw["vllm:num_requests_waiting"]),
-		KVCacheUsage:          raw["vllm:kv_cache_usage_perc"],
-		GenerationTokensTotal: int64(raw["vllm:generation_tokens_total"]),
-		PromptTokensTotal:     int64(raw["vllm:prompt_tokens_total"]),
-		NumPreemptions:        int64(raw["vllm:num_preemptions_total"]),
+		NodeID:    v.nodeID,
+		Timestamp: now.Unix(),
+		ModelName: v.modelName,
+
+		RequestsRunning: int(v.field(raw, "requests running", "vllm:num_requests_running")),
+		RequestsWaiting: int(v.field(raw, "requests waiting", "vllm:num_requests_waiting")),
+		// The cache gauge was renamed between engine versions. Reading only
+		// the newer name showed an empty KV cache for ever on the older one,
+		// which looks exactly like an idle server.
+		KVCacheUsage:          v.field(raw, "kv cache usage", "vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"),
+		GenerationTokensTotal: int64(v.field(raw, "generation tokens", "vllm:generation_tokens_total")),
+		PromptTokensTotal:     int64(v.field(raw, "prompt tokens", "vllm:prompt_tokens_total")),
+		NumPreemptions:        int64(v.field(raw, "preemptions", "vllm:num_preemptions_total")),
 	}
 
 	// Compute TTFT average (delta of sum / delta of count)
@@ -180,7 +197,7 @@ func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
 	v.prevCacheQueries = cacheQueries
 
 	// Compute token throughput (delta generation tokens / elapsed seconds)
-	genTokens := int64(raw["vllm:generation_tokens_total"])
+	genTokens := m.GenerationTokensTotal
 	if !v.prevGenTokensTs.IsZero() && genTokens > v.prevGenTokens {
 		elapsed := now.Sub(v.prevGenTokensTs).Seconds()
 		if elapsed > 0 {
@@ -191,6 +208,24 @@ func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
 	v.prevGenTokensTs = now
 
 	return m, nil
+}
+
+// field reads one value, trying each candidate metric name in turn. A field
+// no candidate provides is logged once: from here a renamed metric is
+// indistinguishable from a genuine zero, and silence about it is how an
+// empty KV cache graph goes unexplained for weeks.
+func (v *VLLMCollector) field(raw map[string]float64, label string, names ...string) float64 {
+	for _, name := range names {
+		if value, ok := raw[name]; ok {
+			return value
+		}
+	}
+
+	if !v.missing[label] {
+		v.missing[label] = true
+		log.Printf("vllm: no %s in this server's /metrics (looked for %s)", label, strings.Join(names, ", "))
+	}
+	return 0
 }
 
 // parsePrometheusMetrics does a simple line-by-line parse of Prometheus text format.
