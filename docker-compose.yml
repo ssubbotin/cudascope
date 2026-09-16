@@ -2,10 +2,15 @@ services:
   cudascope:
     image: ssubbotin/cudascope:latest
     build: .
-    ports:
-      - "9090:9090"
+    container_name: cudascope
+
+    # Host networking: the vLLM collector scrapes the inference server on the
+    # host's own loopback, and the dashboard is served on the host's :9090.
+    network_mode: host
+
     volumes:
       - cudascope-data:/data
+
     deploy:
       resources:
         reservations:
@@ -13,9 +18,17 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    restart: unless-stopped
+
+    # Paired with --collect-stall-exit-after: a collector that wedges cannot
+    # be unstuck from inside, so the process exits and is brought back here.
+    restart: always
+
     environment:
       - CUDASCOPE_DATA_DIR=/data
+      - CUDASCOPE_VLLM_URL=${CUDASCOPE_VLLM_URL:-http://127.0.0.1:8000}
 
 volumes:
   cudascope-data:
+    # Named outright: without this the volume carries the compose project
+    # prefix, and an existing deployment's history is left behind.
+    name: cudascope-data
