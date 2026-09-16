@@ -1,14 +1,15 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { onDestroy } from 'svelte';
+	import { onMessage, connected } from '$lib/stores/websocket';
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import ProcessList from '$lib/components/ProcessList.svelte';
-	import { devices, latestGPU, processes, fetchGPUHistory, gpuKey, parseRangeSeconds } from '$lib/stores/metrics';
+	import { devices, latestGPU, processes, fetchGPUHistory, gpuKey, parseRangeSeconds, isLiveRange, appendPoint } from '$lib/stores/metrics';
 	import type { GPUMetrics } from '$lib/stores/metrics';
 	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor } from '$lib/utils/format';
 
-	let gpuId = $derived(parseInt($page.params.id));
+	let gpuId = $derived(parseInt($page.params.id ?? '0'));
 	let nodeId = $derived($page.url.searchParams.get('node') || 'local');
 	let device = $derived($devices.find((d) => d.id === gpuId && d.node_id === nodeId));
 	let metrics = $derived($latestGPU.find((g) => g.gpu_id === gpuId && (g.node_id || 'local') === nodeId));
@@ -29,7 +30,34 @@
 		xMax = Math.floor(Date.now() / 1000);
 		historyData = await fetchGPUHistory(gpuId, range, nodeId);
 		loading = false;
+		historyLoaded = true;
+		setupRefresh();
 	}
+
+	// An hour or less is drawn from raw samples, which is what the websocket
+	// carries, so the chart follows the stream instead of refetching.
+	let liveTail = $derived(isLiveRange(selectedRange));
+
+	const stopListening = onMessage((data: any) => {
+		if (!liveTail || data.type !== 'gpu_metrics' || !data.gpus) return;
+		if ((data.node_id || 'local') !== nodeId) return;
+
+		const sample = data.gpus.find((g: GPUMetrics) => g.gpu_id === gpuId);
+		if (!sample) return;
+
+		historyData = appendPoint(historyData, { ...sample, node_id: nodeId }, parseRangeSeconds(selectedRange));
+		xMax = Math.floor(Date.now() / 1000);
+	});
+
+	// A dropped connection leaves a gap the stream cannot fill.
+	// Declared here rather than reusing the mount flag below: this callback
+	// fires the moment it subscribes, before that declaration has run.
+	let wasConnected = true;
+	let historyLoaded = false;
+	const stopWatchingConnection = connected.subscribe((isConnected) => {
+		if (isConnected && !wasConnected && historyLoaded) loadHistory(selectedRange, true);
+		wasConnected = isConnected;
+	});
 
 	let ts = $derived(historyData.map((m) => m.ts));
 	const SYNC = 'gpu-detail';
@@ -72,9 +100,9 @@
 
 	function setupRefresh() {
 		clearInterval(refreshInterval);
-		if (autoRefresh) {
-			refreshInterval = setInterval(() => loadHistory(selectedRange, true), 10000);
-		}
+		if (!autoRefresh || liveTail) return;
+		// Wider ranges are drawn from rollups, which change once a minute.
+		refreshInterval = setInterval(() => loadHistory(selectedRange, true), 60000);
 	}
 
 	// Wait for device to be populated (fetchStatus in layout is async)
@@ -88,6 +116,8 @@
 
 	onDestroy(() => {
 		clearInterval(refreshInterval);
+		stopListening();
+		stopWatchingConnection();
 	});
 
 	function handleRefreshToggle(enabled: boolean) {

@@ -281,3 +281,27 @@ export async function fetchAlertHistory(
 		return [];
 	}
 }
+
+// Ranges up to an hour are drawn from raw samples, which is exactly what the
+// websocket delivers, so their charts can follow the stream instead of
+// refetching the whole window every few seconds.
+export const LIVE_RANGE_SECONDS = 3600;
+
+export function isLiveRange(range: string): boolean {
+	return parseRangeSeconds(range) <= LIVE_RANGE_SECONDS;
+}
+
+// appendPoint adds a sample to a chart series, dropping what has fallen out
+// of the window. Samples that are not newer than the last one are ignored,
+// so a repeated or late snapshot cannot bend the axis backwards.
+export function appendPoint<T extends { ts: number }>(
+	list: T[],
+	point: T,
+	windowSeconds: number
+): T[] {
+	if (list.length > 0 && point.ts <= list[list.length - 1].ts) return list;
+
+	const cutoff = point.ts - windowSeconds;
+	const kept = list.length > 0 && list[0].ts < cutoff ? list.filter((p) => p.ts >= cutoff) : list;
+	return [...kept, point];
+}

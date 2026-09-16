@@ -68,6 +68,7 @@ All settings via environment variables or CLI flags:
 | `CUDASCOPE_RETENTION_RAW` | `--retention-raw` | `24h` | Raw metrics retention |
 | `CUDASCOPE_RETENTION_1M` | `--retention-1m` | `720h` | 1-minute rollup retention (30d) |
 | `CUDASCOPE_RETENTION_1H` | `--retention-1h` | `8760h` | 1-hour rollup retention (365d) |
+| `CUDASCOPE_MAX_POINTS` | `--max-points` | `2000` | Most points one history response carries (0 disables the cap) |
 | `CUDASCOPE_AUTH` | `--auth` | - | Basic auth `user:password` |
 | `CUDASCOPE_INGEST_TOKEN` | `--ingest-token` | - | Secret agents present to a hub when pushing metrics |
 | `CUDASCOPE_CORS_ORIGIN` | `--cors-origin` | - | Origin allowed to call the API from another site |
@@ -223,7 +224,18 @@ Dark, light, and system-preference themes. Toggle via the navbar icon.
 
 ### Time Ranges
 
-Preset ranges: 5m, 15m, 1h, 6h, 24h. Auto-refresh toggle and manual refresh button. Data automatically uses the best resolution tier (raw/1m/1h) based on the time span.
+Preset ranges: 5m, 15m, 1h, 6h, 24h, 7d, 30d. Auto-refresh toggle and manual
+refresh button.
+
+Each window is answered from the finest tier that still holds it: a half hour
+from three days ago comes from the minute rollup, because raw rows only live
+for a day. Answers are capped at `--max-points`, folding rows into buckets and
+keeping the peak of each, so a month-wide chart arrives as a couple of
+thousand points instead of tens of thousands.
+
+Charts covering an hour or less follow the websocket rather than refetching:
+new samples are appended as they arrive, and the window is refetched only when
+the range changes, on a manual refresh, or after the connection drops.
 
 ## API
 
