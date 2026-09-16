@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -19,11 +20,26 @@ type BroadcastSink interface {
 	Broadcast(snap Snapshot)
 }
 
+// gpuSource, hostSource and vllmSource are the metric sources the collector
+// drives. They exist so the loop can be tested without a GPU.
+type gpuSource interface {
+	Collect() []GPUMetrics
+	CollectProcesses() []GPUProcess
+}
+
+type hostSource interface {
+	Collect() (*HostMetrics, error)
+}
+
+type vllmSource interface {
+	Collect() (*VLLMMetrics, error)
+}
+
 // Collector orchestrates GPU and host metric collection.
 type Collector struct {
-	gpu       *GPUCollector
-	host      *HostCollector
-	vllm      *VLLMCollector
+	gpu       gpuSource
+	host      hostSource
+	vllm      vllmSource
 	storage   MetricSink
 	broadcast BroadcastSink
 
@@ -45,43 +61,59 @@ func New(gpu *GPUCollector, host *HostCollector, storage MetricSink, broadcast B
 }
 
 // SetVLLM configures vLLM metrics collection.
-func (c *Collector) SetVLLM(vllm *VLLMCollector, interval time.Duration) {
+func (c *Collector) SetVLLM(vllm vllmSource, interval time.Duration) {
+	if vllm == nil {
+		return
+	}
 	c.vllm = vllm
 	c.vllmInterval = interval
 }
 
-// Run starts collection loops. Blocks until ctx is cancelled.
+// Run starts one collection loop per metric source. Blocks until ctx is
+// cancelled.
+//
+// Every source gets its own goroutine on purpose. A single select loop
+// driving all three means one blocking call stops every metric at once, and
+// nothing about that is visible from outside: NVML calls are cgo calls with
+// no timeout, and a wedged driver or a stalled websocket write silently ends
+// collection while the process keeps serving HTTP.
 func (c *Collector) Run(ctx context.Context) {
-	gpuTicker := time.NewTicker(c.gpuInterval)
-	hostTicker := time.NewTicker(c.hostInterval)
-	defer gpuTicker.Stop()
-	defer hostTicker.Stop()
+	var wg sync.WaitGroup
 
-	var vllmTicker *time.Ticker
-	var vllmCh <-chan time.Time
+	start := func(interval time.Duration, fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runTicker(ctx, interval, fn)
+		}()
+	}
+
+	start(c.gpuInterval, c.collectGPU)
+	start(c.hostInterval, c.collectHost)
+
 	if c.vllm != nil {
 		interval := c.vllmInterval
 		if interval == 0 {
 			interval = 5 * time.Second
 		}
-		vllmTicker = time.NewTicker(interval)
-		vllmCh = vllmTicker.C
-		defer vllmTicker.Stop()
+		start(interval, c.collectVLLM)
 	}
+
+	wg.Wait()
+}
+
+// runTicker calls fn on every tick until ctx is done. A slow fn only costs
+// its own ticks, because time.Ticker drops them rather than queueing.
+func runTicker(ctx context.Context, interval time.Duration, fn func()) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-
-		case <-gpuTicker.C:
-			c.collectGPU()
-
-		case <-hostTicker.C:
-			c.collectHost()
-
-		case <-vllmCh:
-			c.collectVLLM()
+		case <-ticker.C:
+			fn()
 		}
 	}
 }
