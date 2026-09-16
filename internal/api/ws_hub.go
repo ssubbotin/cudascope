@@ -135,8 +135,9 @@ func (c *wsClient) writePump() {
 }
 
 // Broadcast sends a snapshot to all connected clients. It never blocks: a
-// client that cannot keep up loses snapshots and is dropped by its own
-// writePump once a write exceeds wsWriteWait.
+// client whose queue is full loses its oldest pending snapshot instead, and
+// one whose connection stalls outright is dropped by its own writePump once
+// a write exceeds wsWriteWait.
 func (h *Hub) Broadcast(snap collector.Snapshot) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -155,8 +156,21 @@ func (h *Hub) Broadcast(snap collector.Snapshot) {
 		select {
 		case c.send <- data:
 		default:
+			// Make room by discarding the oldest pending snapshot. Dropping
+			// the new one instead would leave a client that reads steadily
+			// but slower than we produce permanently a full queue behind,
+			// with nothing to pull it back to the present.
+			select {
+			case <-c.send:
+			default:
+			}
+			select {
+			case c.send <- data:
+			default:
+			}
+
 			c.dropOnce.Do(func() {
-				log.Printf("ws client too slow, dropping snapshots")
+				log.Printf("ws client too slow, discarding older snapshots")
 			})
 		}
 	}

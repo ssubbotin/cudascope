@@ -1,8 +1,11 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -137,4 +140,51 @@ func TestBroadcastIsSafeFromMultipleGoroutines(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// A client that reads steadily but slower than snapshots are produced keeps
+// its queue full without ever exceeding the write deadline on any single
+// frame, so it is never evicted. Dropping the newest snapshot would leave it
+// rendering data a whole queue behind, forever; it has to converge on the
+// present instead.
+func TestSlowClientConvergesOnTheNewestSnapshot(t *testing.T) {
+	hub := NewHub()
+	srv := httptest.NewServer(http.HandlerFunc(hub.HandleWS))
+	defer srv.Close()
+
+	conn := dialHub(t, srv)
+	defer conn.Close()
+	waitForClients(t, hub, 1, 2*time.Second)
+
+	// Produce far more than the queue holds while the client reads nothing.
+	const last = 200
+	snap := bigSnapshot()
+	for i := 1; i <= last; i++ {
+		snap.Timestamp = int64(i)
+		hub.Broadcast(snap)
+	}
+
+	// Now let it catch up: the newest snapshot must still be on its way.
+	for i := 0; i < 4*wsSendQueue; i++ {
+		if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatalf("set read deadline: %v", err)
+		}
+		_, data, err := conn.ReadMessage()
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+
+		var got collector.Snapshot
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Timestamp == last {
+			return
+		}
+	}
+
+	t.Errorf("never received snapshot %d: the client is stuck behind a full queue", last)
 }
