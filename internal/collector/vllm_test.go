@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // vllmMetricsBody renders a minimal /metrics page. An empty model means the
@@ -102,10 +103,10 @@ func TestCollectFollowsModelSwap(t *testing.T) {
 	}
 }
 
-// The /v1/models fallback is for the case where the name is unknown. Once it
-// answers, later scrapes must not keep asking: the call is blocking, shares
-// the 10s client timeout, and logs a line every time.
-func TestCollectQueriesModelsOnlyWhileNameIsUnknown(t *testing.T) {
+// The /v1/models fallback is bounded by a cooldown: the call is blocking,
+// shares the 10s client timeout with the scrape, and logs a line each time,
+// so a scrape every 5s must not mean a models query every 5s.
+func TestCollectQueriesModelsAtMostOncePerCooldown(t *testing.T) {
 	f := newFakeVLLM(t, "", "qwen3.8")
 	v := NewVLLMCollector(f.srv.URL, "local")
 
@@ -147,5 +148,28 @@ func TestCollectThrottlesTheModelsFallbackOnFailure(t *testing.T) {
 
 	if got := f.modelsCalls.Load(); got != 1 {
 		t.Errorf("/v1/models called %d times across 5 scrapes, want 1", got)
+	}
+}
+
+// A swap to a model whose /metrics carries no model_name label cannot be
+// seen in the label, so the fallback has to be consulted again rather than
+// reporting the retired model for as long as the process runs.
+func TestCollectFollowsAModelSwapWithoutALabel(t *testing.T) {
+	f := newFakeVLLM(t, "", "qwen3.8")
+	v := NewVLLMCollector(f.srv.URL, "local")
+
+	if got := mustCollect(t, v).ModelName; got != "qwen3.8" {
+		t.Fatalf("first scrape: got %q, want %q", got, "qwen3.8")
+	}
+
+	// vLLM comes back on another model, still without the label.
+	f.modelsAnswer.Store("gemma4")
+	if got := mustCollect(t, v).ModelName; got != "qwen3.8" {
+		t.Errorf("inside the cooldown: got %q, want the known %q", got, "qwen3.8")
+	}
+
+	v.modelsRetryAt = time.Now() // cooldown elapsed
+	if got := mustCollect(t, v).ModelName; got != "gemma4" {
+		t.Errorf("after the cooldown: got %q, want %q", got, "gemma4")
 	}
 }

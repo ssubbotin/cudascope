@@ -52,7 +52,6 @@ func NewVLLMCollector(baseURL, nodeID string) *VLLMCollector {
 	}
 }
 
-// fetchModelName queries /v1/models to discover the served model name.
 // fetchModelName queries /v1/models to discover the served model name. It
 // returns "" when the name cannot be determined.
 func (v *VLLMCollector) fetchModelName() string {
@@ -90,9 +89,11 @@ func (v *VLLMCollector) fetchModelName() string {
 // while the engine is still starting, and blanking the field would store
 // empty model names for those samples.
 //
-// The /v1/models fallback runs only while the name is unknown, and at most
-// once per vllmModelsRetry. It is a blocking call on the collector's own
-// goroutine and it shares the client timeout with the scrape itself.
+// A missing label also sends us to /v1/models, at most once per
+// vllmModelsRetry. That covers both the name never having been known and a
+// swap to a model whose /metrics carries no label, which the label alone can
+// never reveal. The cooldown matters because this is a blocking call on the
+// collector's own goroutine, sharing the client timeout with the scrape.
 func (v *VLLMCollector) resolveModelName(scraped string) {
 	if scraped != "" {
 		if scraped != v.modelName {
@@ -102,12 +103,12 @@ func (v *VLLMCollector) resolveModelName(scraped string) {
 		return
 	}
 
-	if v.modelName != "" || time.Now().Before(v.modelsRetryAt) {
+	if time.Now().Before(v.modelsRetryAt) {
 		return
 	}
 	v.modelsRetryAt = time.Now().Add(vllmModelsRetry)
 
-	if name := v.fetchModelName(); name != "" {
+	if name := v.fetchModelName(); name != "" && name != v.modelName {
 		log.Printf("vllm: model name = %s", name)
 		v.modelName = name
 	}
@@ -115,7 +116,6 @@ func (v *VLLMCollector) resolveModelName(scraped string) {
 
 // Collect scrapes the vLLM /metrics endpoint and returns parsed metrics.
 func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
-
 	resp, err := v.client.Get(v.baseURL + "/metrics")
 	if err != nil {
 		return nil, fmt.Errorf("GET /metrics: %w", err)
