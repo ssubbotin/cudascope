@@ -248,10 +248,18 @@ func (e *Engine) NoteXid(nodeID string, gpuID int, xid uint64) {
 	opened := false
 
 	if c == nil || !c.open {
+		// A fault whose card could not be identified belongs to the node: a
+		// journal entry reading "GPU -1" helps nobody.
+		var card *int
+		if gpuID >= 0 {
+			id := gpuID
+			card = &id
+		}
+
 		c = &candidate{
 			ev: Event{
 				NodeID:    nodeID,
-				GPUID:     &gpuID,
+				GPUID:     card,
 				Kind:      KindXid,
 				StartedAt: now.Unix(),
 				PeakValue: 1,

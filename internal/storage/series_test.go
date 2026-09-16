@@ -170,3 +170,53 @@ func TestZeroMaxPointsMeansNoCap(t *testing.T) {
 		t.Fatalf("an unset cap changed the answer: %d points", len(metrics))
 	}
 }
+
+// "Did this card hold itself back last night" is a question about a window
+// wider than the raw rows survive, so the mask has to reach the rollup. The
+// fold is a real bitwise OR: the largest mask in a minute can be the one
+// without the power cap in it.
+func TestTheRollupKeepsEveryThrottleReason(t *testing.T) {
+	db := openTestDBWith(t, Options{})
+	now := time.Now().Unix()
+	minute := (now - 600) / 60 * 60
+
+	samples := []struct {
+		ts   int64
+		mask uint64
+	}{
+		{minute + 10, 4},   // power cap
+		{minute + 20, 256}, // display clocks, numerically larger
+		{minute + 30, 0},
+	}
+	for _, s := range samples {
+		err := db.WriteGPUMetrics([]collector.GPUMetrics{{
+			NodeID: "local", GPUID: 0, Timestamp: s.ts, GPUUtil: 50, ThrottleReasons: s.mask,
+		}})
+		if err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	db.doRetention(RetentionConfig{Raw: time.Minute, M1: 30 * 24 * time.Hour, H1: 365 * 24 * time.Hour})
+
+	metrics, err := db.GetGPUMetrics(GPUMetricsQuery{
+		GPUID: 0, NodeID: "local", From: now - 12*3600, To: now,
+	})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(metrics) == 0 {
+		t.Fatal("the rollup lost the minute")
+	}
+
+	var seen uint64
+	for _, m := range metrics {
+		seen |= m.ThrottleReasons
+	}
+	if seen&4 == 0 {
+		t.Fatalf("the power cap did not survive the fold: mask %d", seen)
+	}
+	if seen&256 == 0 {
+		t.Fatalf("the display clock reason did not survive the fold: mask %d", seen)
+	}
+}

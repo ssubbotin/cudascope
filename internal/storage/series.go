@@ -197,10 +197,10 @@ var gpuSeries = series{tiers: []seriesTier{
 			{sel: "CAST(pcie_tx_avg AS INTEGER)", agg: "CAST(AVG(pcie_tx_avg) AS INTEGER)"},
 			{sel: "CAST(pcie_rx_avg AS INTEGER)", agg: "CAST(AVG(pcie_rx_avg) AS INTEGER)"},
 			constCol("0"), constCol("0"), constCol("0"),
-			// The rollups predate these columns: the tiers carry no throttle
-			// mask or ECC counts, and reporting zero here says "not stored",
-			// the same way pstate and the codecs already do.
-			constCol("0"), constCol("0"), constCol("0"),
+			// The rollups keep the throttle mask; ECC counters are not folded,
+			// and zero there says "not stored", the same way pstate and the
+			// codecs already do.
+			peakCol("throttle_reasons"), constCol("0"), constCol("0"),
 		},
 	},
 	{
@@ -214,7 +214,7 @@ var gpuSeries = series{tiers: []seriesTier{
 			avgCol("power_draw_avg"), constCol("0"),
 			constCol("0"), constCol("0"), constCol("0"), constCol("0"),
 			constCol("0"), constCol("0"), constCol("0"),
-			constCol("0"), constCol("0"), constCol("0"),
+			peakCol("throttle_reasons"), constCol("0"), constCol("0"),
 		},
 	},
 }}

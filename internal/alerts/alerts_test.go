@@ -597,3 +597,21 @@ func TestXidsOnDifferentCardsAreDifferentEvents(t *testing.T) {
 		t.Fatalf("want two rows, got %d", store.openCount())
 	}
 }
+
+func TestAnXidFromAnUnidentifiedCardIsANodeEvent(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(testConfig(), store, c.now)
+
+	e.NoteXid("local", -1, 48)
+
+	active := e.Active()
+	if len(active) != 1 {
+		t.Fatalf("want one event, got %d", len(active))
+	}
+	if active[0].GPUID != nil {
+		t.Fatalf("want a node level event, got gpu %d", *active[0].GPUID)
+	}
+	if store.openCount() != 1 {
+		t.Fatalf("want it recorded, got %d rows", store.openCount())
+	}
+}

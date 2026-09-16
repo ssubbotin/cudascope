@@ -95,12 +95,17 @@ func (db *DB) rollupGPUTo1m(beforeTs int64) {
 	_, err := db.conn.Exec(`
 		INSERT OR REPLACE INTO gpu_metrics_1m (ts, node_id, gpu_id, gpu_util_avg, gpu_util_max, mem_util_avg,
 			mem_used_avg, mem_used_max, temperature_avg, temperature_max, fan_speed_avg,
-			power_draw_avg, power_draw_max, clock_gfx_avg, clock_mem_avg, pcie_tx_avg, pcie_rx_avg)
+			power_draw_avg, power_draw_max, clock_gfx_avg, clock_mem_avg, pcie_tx_avg, pcie_rx_avg,
+			throttle_reasons)
 		SELECT
 			(ts / 60) * 60 as minute_ts, COALESCE(node_id, 'local'), gpu_id,
 			AVG(gpu_util), MAX(gpu_util), AVG(mem_util),
 			AVG(mem_used), MAX(mem_used), AVG(temperature), MAX(temperature), AVG(fan_speed),
-			AVG(power_draw), MAX(power_draw), AVG(clock_gfx), AVG(clock_mem), AVG(pcie_tx), AVG(pcie_rx)
+			AVG(power_draw), MAX(power_draw), AVG(clock_gfx), AVG(clock_mem), AVG(pcie_tx), AVG(pcie_rx),
+			-- Every reason seen in the bucket, not the largest mask in it:
+			-- SQLite has no bitwise OR aggregate, and MAX of {power cap,
+			-- display clocks} answers "display clocks" and hides the cap.
+			MAX(throttle_reasons & 1) + MAX(throttle_reasons & 2) + MAX(throttle_reasons & 4) + MAX(throttle_reasons & 8) + MAX(throttle_reasons & 16) + MAX(throttle_reasons & 32) + MAX(throttle_reasons & 64) + MAX(throttle_reasons & 128) + MAX(throttle_reasons & 256)
 		FROM gpu_metrics_raw
 		WHERE ts > ? AND ts <= ?
 		GROUP BY minute_ts, COALESCE(node_id, 'local'), gpu_id
@@ -119,12 +124,14 @@ func (db *DB) rollupGPUTo1h(beforeTs int64) {
 
 	_, err := db.conn.Exec(`
 		INSERT OR REPLACE INTO gpu_metrics_1h (ts, node_id, gpu_id, gpu_util_avg, gpu_util_max, mem_util_avg,
-			mem_used_avg, mem_used_max, temperature_avg, temperature_max, power_draw_avg, power_draw_max)
+			mem_used_avg, mem_used_max, temperature_avg, temperature_max, power_draw_avg, power_draw_max,
+			throttle_reasons)
 		SELECT
 			(ts / 3600) * 3600 as hour_ts, COALESCE(node_id, 'local'), gpu_id,
 			AVG(gpu_util_avg), MAX(gpu_util_max), AVG(mem_util_avg),
 			AVG(mem_used_avg), MAX(mem_used_max), AVG(temperature_avg), MAX(temperature_max),
-			AVG(power_draw_avg), MAX(power_draw_max)
+			AVG(power_draw_avg), MAX(power_draw_max),
+			MAX(throttle_reasons & 1) + MAX(throttle_reasons & 2) + MAX(throttle_reasons & 4) + MAX(throttle_reasons & 8) + MAX(throttle_reasons & 16) + MAX(throttle_reasons & 32) + MAX(throttle_reasons & 64) + MAX(throttle_reasons & 128) + MAX(throttle_reasons & 256)
 		FROM gpu_metrics_1m
 		WHERE ts > ? AND ts <= ?
 		GROUP BY hour_ts, COALESCE(node_id, 'local'), gpu_id
