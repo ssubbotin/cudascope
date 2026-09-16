@@ -30,6 +30,9 @@ const alertSweepInterval = 5 * time.Second
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
 
 	// Healthcheck mode: just probe the HTTP endpoint and exit
 	if cfg.Mode == "healthcheck" {
@@ -160,6 +163,9 @@ func runHub(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) 
 	go func() { <-ctx.Done(); db.Close() }()
 
 	log.Println("running in hub mode — waiting for agent connections")
+	if cfg.IngestToken == "" && cfg.Auth == "" {
+		log.Println("warning: ingest is open, anything that can reach this port may register a node and store metrics (set --ingest-token)")
+	}
 
 	// WebSocket hub
 	hub := api.NewHub()
@@ -187,10 +193,6 @@ func runHub(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) 
 }
 
 func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config) *http.Server {
-	if cfg.HubURL == "" {
-		log.Fatalf("agent mode requires --hub-url")
-	}
-
 	// Determine node ID
 	nodeID := cfg.NodeID
 	if nodeID == "" {
@@ -211,7 +213,10 @@ func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config
 	hostCol := collector.NewHostCollector(nodeID)
 
 	// Agent sink (pushes metrics to hub)
-	agentSink := agent.New(cfg.HubURL, nodeID)
+	agentSink := agent.New(cfg.HubURL, nodeID, agent.Options{
+		Token: cfg.IngestToken,
+		Auth:  cfg.Auth,
+	})
 
 	// Register with hub (retries until successful)
 	go func() {
@@ -247,10 +252,12 @@ func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config
 
 func newAPIServer(db *storage.DB, hub *api.Hub, engine *alerts.Engine, cfg *config.Config) *api.Server {
 	opts := api.Options{
-		Store:  db,
-		Hub:    hub,
-		Alerts: engine,
-		Auth:   cfg.Auth,
+		Store:       db,
+		Hub:         hub,
+		Alerts:      engine,
+		Auth:        cfg.Auth,
+		IngestToken: cfg.IngestToken,
+		CORSOrigin:  cfg.CORSOrigin,
 	}
 
 	if cfg.DevMode {

@@ -2,9 +2,17 @@ package config
 
 import (
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 )
+
+// minSampleInterval is the finest resolution storage can represent: raw rows
+// are keyed by whole seconds, and a unique index on that key keeps a resent
+// batch from being stored twice. Collecting faster would silently keep one
+// sample per second out of however many were taken.
+const minSampleInterval = time.Second
 
 type Config struct {
 	Mode                  string
@@ -32,6 +40,49 @@ type Config struct {
 	RetentionAlerts       time.Duration // how long closed alert events are kept
 	VLLMUrl               string        // vLLM metrics endpoint base URL (empty = disabled)
 	VLLMInterval          time.Duration
+	IngestToken           string // shared secret agents present to a hub (empty = disabled)
+	CORSOrigin            string // origin allowed to call the API cross-site (empty = none)
+}
+
+// Validate reports a configuration that cannot do what it appears to ask
+// for. Called before anything is opened or served, so the process refuses to
+// start rather than running in a shape the operator did not intend.
+func (c *Config) Validate() error {
+	switch c.Mode {
+	case "standalone", "hub", "agent", "healthcheck":
+	default:
+		return fmt.Errorf("unknown mode %q: expected standalone, hub or agent", c.Mode)
+	}
+
+	if c.Mode == "agent" && c.HubURL == "" {
+		return fmt.Errorf("agent mode needs --hub-url")
+	}
+
+	if c.Auth != "" {
+		user, _, ok := strings.Cut(c.Auth, ":")
+		if !ok || user == "" {
+			// Silence here once left a deployment open: a value with no colon
+			// disabled authentication and said nothing about it.
+			return fmt.Errorf("auth credentials must read user:password")
+		}
+	}
+
+	for _, iv := range []struct {
+		flag  string
+		value time.Duration
+	}{
+		{"collect-interval", c.CollectInterval},
+		{"host-interval", c.HostInterval},
+		{"process-interval", c.ProcessInterval},
+		{"vllm-interval", c.VLLMInterval},
+	} {
+		if iv.value < minSampleInterval {
+			return fmt.Errorf("--%s is %s: the finest resolution storage keeps is %s",
+				iv.flag, iv.value, minSampleInterval)
+		}
+	}
+
+	return nil
 }
 
 func Load() *Config {
@@ -62,6 +113,8 @@ func Load() *Config {
 	flag.DurationVar(&cfg.RetentionAlerts, "retention-alerts", envOrDefaultDuration("CUDASCOPE_RETENTION_ALERTS", 90*24*time.Hour), "closed alert event retention")
 	flag.StringVar(&cfg.VLLMUrl, "vllm-url", envOrDefault("CUDASCOPE_VLLM_URL", ""), "vLLM metrics endpoint base URL (empty=disabled)")
 	flag.DurationVar(&cfg.VLLMInterval, "vllm-interval", envOrDefaultDuration("CUDASCOPE_VLLM_INTERVAL", 5*time.Second), "vLLM metrics collection interval")
+	flag.StringVar(&cfg.IngestToken, "ingest-token", envOrDefault("CUDASCOPE_INGEST_TOKEN", ""), "shared secret agents must present to a hub (empty=ingest is open)")
+	flag.StringVar(&cfg.CORSOrigin, "cors-origin", envOrDefault("CUDASCOPE_CORS_ORIGIN", ""), "origin allowed to call the API cross-site (empty=none)")
 
 	flag.Parse()
 	return cfg

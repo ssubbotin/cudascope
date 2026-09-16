@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -29,6 +30,15 @@ type Options struct {
 	UIDir   string // where, in dev mode
 	Auth    string // "user:password", empty disables
 
+	// IngestToken is the secret agents present when pushing metrics. Empty
+	// falls back to Auth, and with neither set the ingest routes are open.
+	IngestToken string
+
+	// CORSOrigin is the single origin allowed to call this API from another
+	// site. Empty sends no cross-origin headers at all, which is what a
+	// dashboard served by this same process needs.
+	CORSOrigin string
+
 	// StateInterval is how often the state snapshot is resent even when
 	// nothing changed. Zero selects the default.
 	StateInterval time.Duration
@@ -44,8 +54,10 @@ type Server struct {
 	devMode bool
 	uiDir   string
 
-	authUser string // basic auth (empty = disabled)
-	authPass string
+	authUser    string // basic auth (empty = disabled)
+	authPass    string
+	ingestToken string
+	corsOrigin  string
 
 	// collectStaleAfter makes healthz fail when metrics stop arriving.
 	// Zero disables the check.
@@ -68,21 +80,22 @@ func NewServer(opts Options) *Server {
 		uiDir:         opts.UIDir,
 		stateInterval: opts.StateInterval,
 		stateTrigger:  make(chan struct{}, 1),
+		ingestToken:   opts.IngestToken,
+		corsOrigin:    opts.CORSOrigin,
 	}
 	if s.stateInterval <= 0 {
 		s.stateInterval = defaultStateInterval
 	}
 
 	if opts.Auth != "" {
-		parts := strings.SplitN(opts.Auth, ":", 2)
-		if len(parts) != 2 || parts[0] == "" {
-			// Silence here once left a deployment wide open: a value with no
-			// colon disabled authentication and said nothing about it.
-			log.Printf("warning: auth credentials must read user:password, authentication stays off")
-		} else {
-			s.authUser, s.authPass = parts[0], parts[1]
-			log.Printf("basic auth enabled for user %q", s.authUser)
-		}
+		// config.Validate refuses a value without a colon before anything is
+		// served, so a malformed one cannot reach this point.
+		user, pass, _ := strings.Cut(opts.Auth, ":")
+		s.authUser, s.authPass = user, pass
+		log.Printf("basic auth enabled for user %q", s.authUser)
+	}
+	if s.ingestToken != "" {
+		log.Printf("ingest requires a token")
 	}
 
 	if s.alerts != nil {
@@ -164,30 +177,79 @@ func (s *Server) HTTPServer(port int) *http.Server {
 
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// CORS
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == "OPTIONS" {
+		// Cross-origin access is off unless an origin was named. The UI is
+		// served by this same process, so the wildcard that used to be here
+		// bought nothing and let any page in the browser read the metrics of
+		// a dashboard it could reach.
+		if s.corsOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		}
+		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// Basic auth (skip healthz and ingest endpoints)
-		if s.authUser != "" {
-			path := r.URL.Path
-			if path != "/api/v1/healthz" && !strings.HasPrefix(path, "/api/v1/ingest/") {
-				user, pass, ok := r.BasicAuth()
-				if !ok || user != s.authUser || pass != s.authPass {
-					w.Header().Set("WWW-Authenticate", `Basic realm="CudaScope"`)
-					http.Error(w, "Unauthorized", http.StatusUnauthorized)
-					return
-				}
+		path := r.URL.Path
+		switch {
+		case path == "/api/v1/healthz":
+			// Always reachable: a health probe carries no credentials.
+
+		case strings.HasPrefix(path, "/api/v1/ingest/"):
+			if !s.ingestAllowed(r) {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+		default:
+			if s.authUser != "" && !s.basicAuthOK(r) {
+				w.Header().Set("WWW-Authenticate", `Basic realm="CudaScope"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
 			}
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ingestAllowed reports whether this request may write metrics.
+//
+// A token is the intended way. Falling back to the dashboard credentials
+// covers the surprise that used to be here: turning on --auth protected
+// every read and left every write open.
+func (s *Server) ingestAllowed(r *http.Request) bool {
+	if s.ingestToken != "" {
+		return secretMatches(bearerToken(r), s.ingestToken)
+	}
+	if s.authUser != "" {
+		return s.basicAuthOK(r)
+	}
+	return true
+}
+
+func (s *Server) basicAuthOK(r *http.Request) bool {
+	user, pass, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	return secretMatches(user, s.authUser) && secretMatches(pass, s.authPass)
+}
+
+func bearerToken(r *http.Request) string {
+	header := r.Header.Get("Authorization")
+	if value, ok := strings.CutPrefix(header, "Bearer "); ok {
+		return value
+	}
+	return ""
+}
+
+// secretMatches compares in constant time, so the answer does not depend on
+// how many leading characters a guess got right.
+func secretMatches(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -592,7 +654,8 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		}
 		id := strconv.Itoa(g.GPUID)
 		name := nameMap[fmt.Sprintf("%s:%d", node, g.GPUID)]
-		labels := fmt.Sprintf(`node_id="%s",gpu_id="%s",gpu_name="%s"`, node, id, name)
+		labels := fmt.Sprintf(`node_id="%s",gpu_id="%s",gpu_name="%s"`,
+			escapeLabel(node), escapeLabel(id), escapeLabel(name))
 
 		fmt.Fprintf(w, "cudascope_gpu_utilization_percent{%s} %.1f\n", labels, g.GPUUtil)
 		fmt.Fprintf(w, "cudascope_gpu_memory_used_mib{%s} %d\n", labels, g.MemUsed)
@@ -615,7 +678,7 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		if node == "" {
 			node = "local"
 		}
-		labels := fmt.Sprintf(`node_id="%s"`, node)
+		labels := fmt.Sprintf(`node_id="%s"`, escapeLabel(node))
 		fmt.Fprintf(w, "cudascope_host_cpu_percent{%s} %.1f\n", labels, h.CPUPercent)
 		fmt.Fprintf(w, "cudascope_host_memory_used_bytes{%s} %d\n", labels, h.MemUsed)
 		fmt.Fprintf(w, "cudascope_host_memory_total_bytes{%s} %d\n", labels, h.MemTotal)
@@ -624,6 +687,19 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "cudascope_host_load_15m{%s} %.2f\n", labels, h.Load15m)
 	}
 }
+
+// escapeLabel makes a value safe to place inside a Prometheus label. An
+// unescaped quote ends the value early and leaves the rest of the exposition
+// unparseable, so one oddly named GPU takes every metric down with it.
+func escapeLabel(v string) string {
+	return labelEscaper.Replace(v)
+}
+
+var labelEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`"`, `\"`,
+	"\n", `\n`,
+)
 
 // --- Alerts ---
 
