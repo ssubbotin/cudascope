@@ -41,3 +41,35 @@ export function utilColor(pct: number): string {
 	if (pct < 80) return 'var(--color-yellow)';
 	return 'var(--color-red)';
 }
+
+const alertNames: Record<string, string> = {
+	temperature: 'Temperature',
+	gpu_util: 'GPU utilization',
+	mem_util: 'Memory utilization',
+	node_silent: 'Node silent',
+	collector_stalled: 'Collection stalled'
+};
+
+export function alertName(kind: string): string {
+	return alertNames[kind] ?? kind;
+}
+
+// Silence alerts carry an age in seconds where the others carry a reading.
+export function alertValue(kind: string, value: number): string {
+	if (kind === 'node_silent' || kind === 'collector_stalled') {
+		return formatDuration(value);
+	}
+	if (kind === 'temperature') return formatTemp(Math.round(value));
+	return value.toFixed(0) + '%';
+}
+
+export function formatDuration(seconds: number): string {
+	if (seconds < 60) return Math.round(seconds) + 's';
+	if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+	if (seconds < 86400) return (seconds / 3600).toFixed(1) + 'h';
+	return (seconds / 86400).toFixed(1) + 'd';
+}
+
+export function formatClock(unix: number): string {
+	return new Date(unix * 1000).toLocaleString();
+}

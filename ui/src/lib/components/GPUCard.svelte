@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { GPUDevice, GPUMetrics, Alert } from '$lib/stores/metrics';
+	import type { GPUDevice, GPUMetrics } from '$lib/stores/metrics';
 	import { alerts, gpuKey } from '$lib/stores/metrics';
 	import ProgressBar from './ProgressBar.svelte';
 	import Sparkline from './Sparkline.svelte';
-	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor } from '$lib/utils/format';
+	import { formatMiB, formatWatts, formatTemp, utilColor, tempColor, alertName, alertValue } from '$lib/utils/format';
 
 	interface Props {
 		device: GPUDevice;
@@ -38,7 +38,7 @@
 			</div>
 			<div class="flex items-center gap-1.5">
 				{#if hasAlert}
-					<span class="text-xs px-2 py-0.5 rounded-full bg-red/10 text-red border border-red/20" title={gpuAlerts.map((a) => `${a.metric}: ${a.value.toFixed(0)} >= ${a.threshold}`).join(', ')}>
+					<span class="text-xs px-2 py-0.5 rounded-full bg-red/10 text-red border border-red/20" title={gpuAlerts.map((a) => `${alertName(a.kind)}: ${alertValue(a.kind, a.last_value)} (peak ${alertValue(a.kind, a.peak_value)}, threshold ${alertValue(a.kind, a.threshold)})`).join(', ')}>
 						<svg class="w-3 h-3 inline-block -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
 							<line x1="12" y1="9" x2="12" y2="13"/>

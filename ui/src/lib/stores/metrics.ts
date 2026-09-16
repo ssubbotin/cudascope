@@ -79,12 +79,27 @@ export interface VLLMMetrics {
 	num_preemptions: number;
 }
 
-export interface Alert {
+// AlertKind names what an event is about. The first three carry a measured
+// value; the last two carry the age of the newest data in seconds.
+export type AlertKind =
+	| 'temperature'
+	| 'gpu_util'
+	| 'mem_util'
+	| 'node_silent'
+	| 'collector_stalled';
+
+// AlertEvent is one alert from the moment it opened to the moment it
+// cleared. Open events have no ended_at.
+export interface AlertEvent {
+	id: number;
 	node_id: string;
-	gpu_id: number;
-	metric: string;
-	value: number;
+	gpu_id?: number;
+	kind: AlertKind;
 	threshold: number;
+	started_at: number;
+	ended_at?: number;
+	peak_value: number;
+	last_value: number;
 }
 
 // Helper: create a composite key for multi-node GPU identification
@@ -99,7 +114,7 @@ export const devices = writable<GPUDevice[]>([]);
 export const latestGPU = writable<GPUMetrics[]>([]);
 export const latestHosts = writable<Map<string, HostMetrics>>(new Map());
 export const processes = writable<GPUProcess[]>([]);
-export const alerts = writable<Alert[]>([]);
+export const alerts = writable<AlertEvent[]>([]);
 export const latestVLLM = writable<VLLMMetrics | null>(null);
 export const vllmHistory = writable<VLLMMetrics[]>([]);
 
@@ -159,6 +174,15 @@ onMessage((data: any) => {
 		});
 	}
 
+	// Nodes, devices and alerts used to arrive once, in the single status
+	// call made at mount, so an open tab could show a dead node as online
+	// and an alert count from page load.
+	if (data.type === 'state') {
+		if (data.nodes) nodes.set(data.nodes);
+		if (data.devices) devices.set(data.devices);
+		alerts.set(data.alerts ?? []);
+	}
+
 	if (data.type === 'gpu_processes' && data.processes) {
 		const nodeId = data.node_id || 'local';
 		processes.update((arr) => {
@@ -185,7 +209,7 @@ export async function fetchStatus() {
 			latestHosts.set(map);
 		}
 		if (data.processes) processes.set(data.processes);
-		if (data.alerts) alerts.set(data.alerts);
+		alerts.set(data.alerts ?? []);
 		if (data.vllm) latestVLLM.set(data.vllm);
 	} catch (e) {
 		console.error('Failed to fetch status:', e);
@@ -234,6 +258,22 @@ export async function fetchVLLMHistory(range: string, nodeId?: string): Promise<
 export async function fetchHostHistory(range: string, nodeId?: string): Promise<HostMetrics[]> {
 	try {
 		let url = `/api/v1/host/metrics?range=${range}`;
+		if (nodeId) url += `&node=${nodeId}`;
+		const res = await fetch(url);
+		return await res.json();
+	} catch {
+		return [];
+	}
+}
+
+// Fetch the alert journal, newest first
+export async function fetchAlertHistory(
+	range: string,
+	nodeId?: string,
+	limit = 200
+): Promise<AlertEvent[]> {
+	try {
+		let url = `/api/v1/alerts/history?range=${range}&limit=${limit}`;
 		if (nodeId) url += `&node=${nodeId}`;
 		const res = await fetch(url);
 		return await res.json();
