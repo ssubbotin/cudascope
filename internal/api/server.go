@@ -47,6 +47,7 @@ type Server struct {
 	// collectStaleAfter makes healthz fail when metrics stop arriving.
 	// Zero disables the check.
 	collectStaleAfter time.Duration
+	collectNodeID     string
 
 	alertsMu     sync.RWMutex
 	activeAlerts []Alert
@@ -170,7 +171,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if s.collectStaleAfter > 0 {
-		ts, err := s.store.LatestGPUMetricTs()
+		ts, err := s.store.LatestGPUMetricTs(s.collectNodeID)
 		if err != nil {
 			httpError(w, "healthz: read latest metric: "+err.Error(), http.StatusServiceUnavailable)
 			return
@@ -739,11 +740,16 @@ func uiDirExists(dir string) bool {
 }
 
 // SetCollectorWatchdog makes /api/v1/healthz fail once the newest GPU metric
-// row is older than staleAfter. Zero disables the check.
+// row for nodeID is older than staleAfter. Zero disables the check.
+//
+// The node must be named: standalone mode serves the ingest endpoints too,
+// so an agent pushing to this host would otherwise keep the check green
+// while the local collector is wedged.
 //
 // Without it healthz answers "ok" as long as the HTTP goroutine is alive,
 // which says nothing about collection: on 2026-09-16 the container reported
 // healthy for the whole hour its collector was stuck. Call before serving.
-func (s *Server) SetCollectorWatchdog(staleAfter time.Duration) {
+func (s *Server) SetCollectorWatchdog(nodeID string, staleAfter time.Duration) {
+	s.collectNodeID = nodeID
 	s.collectStaleAfter = staleAfter
 }

@@ -379,12 +379,23 @@ func (db *DB) GetAllGPUProcesses() ([]collector.GPUProcess, error) {
 	return procs, rows.Err()
 }
 
-// LatestGPUMetricTs returns the timestamp of the newest raw GPU metric row,
-// or 0 when the table is empty. It is the cheapest honest answer to "is
-// anything still collecting?" — the ts index makes it a single lookup.
-func (db *DB) LatestGPUMetricTs() (int64, error) {
+// LatestGPUMetricTs returns the timestamp of the newest raw GPU metric row
+// for nodeID, or 0 when there is none. An empty nodeID spans every node.
+//
+// Callers that ask "is collection still running here?" must name their own
+// node: standalone mode serves the ingest endpoints too, so a remote agent's
+// pushes land in the same table and would keep the answer moving while the
+// local collector is wedged. Both node_id and ts are indexed.
+func (db *DB) LatestGPUMetricTs(nodeID string) (int64, error) {
 	var ts sql.NullInt64
-	if err := db.conn.QueryRow(`SELECT MAX(ts) FROM gpu_metrics_raw`).Scan(&ts); err != nil {
+	var err error
+
+	if nodeID == "" {
+		err = db.conn.QueryRow(`SELECT MAX(ts) FROM gpu_metrics_raw`).Scan(&ts)
+	} else {
+		err = db.conn.QueryRow(`SELECT MAX(ts) FROM gpu_metrics_raw WHERE node_id = ?`, nodeID).Scan(&ts)
+	}
+	if err != nil {
 		return 0, err
 	}
 	return ts.Int64, nil

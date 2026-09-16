@@ -44,7 +44,7 @@ func writeGPUMetricAt(t *testing.T, db *storage.DB, ts time.Time) {
 // report healthy for an hour with a dead collector.
 func TestHealthzFailsWhenCollectionIsStale(t *testing.T) {
 	s, db := newTestServer(t)
-	s.SetCollectorWatchdog(30 * time.Second)
+	s.SetCollectorWatchdog("local", 30*time.Second)
 
 	if got := healthzCode(t, s); got != 503 {
 		t.Errorf("empty store: got %d, want 503", got)
@@ -73,5 +73,32 @@ func TestHealthzIgnoresStalenessWhenWatchdogIsOff(t *testing.T) {
 	writeGPUMetricAt(t, db, time.Now().Add(-time.Hour))
 	if got := healthzCode(t, s); got != 200 {
 		t.Errorf("stale row: got %d, want 200", got)
+	}
+}
+
+// Standalone mode serves the ingest endpoints too, so a remote agent's
+// pushes land in the same table. They must not stand in for the local
+// collector, which is the thing this check is about.
+func TestHealthzIgnoresOtherNodesMetrics(t *testing.T) {
+	s, db := newTestServer(t)
+	s.SetCollectorWatchdog("local", 30*time.Second)
+
+	writeGPUMetricAt(t, db, time.Now().Add(-time.Hour))
+	if got := healthzCode(t, s); got != 503 {
+		t.Fatalf("stale local row: got %d, want 503", got)
+	}
+
+	// A remote agent reports in, on time.
+	err := db.WriteGPUMetrics([]collector.GPUMetrics{{
+		NodeID:    "gpu-node-2",
+		Timestamp: time.Now().Unix(),
+		GPUID:     0,
+	}})
+	if err != nil {
+		t.Fatalf("write agent metrics: %v", err)
+	}
+
+	if got := healthzCode(t, s); got != 503 {
+		t.Errorf("another node's fresh row: got %d, want 503", got)
 	}
 }

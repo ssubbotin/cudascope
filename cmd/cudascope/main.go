@@ -19,6 +19,9 @@ import (
 	"github.com/sergey/cudascope/internal/watchdog"
 )
 
+// localNodeID is the node that standalone mode registers itself under.
+const localNodeID = "local"
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	cfg := config.Load()
@@ -82,7 +85,7 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 
 	// Register local node
 	hostname, _ := os.Hostname()
-	db.RegisterNode("local", hostname, 0)
+	db.RegisterNode(localNodeID, hostname, 0)
 
 	// Initialize GPU collector
 	gpuCol, err := collector.NewGPUCollector()
@@ -92,14 +95,14 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 	go func() { <-ctx.Done(); gpuCol.Shutdown() }()
 
 	// Register GPU devices under 'local' node
-	if err := db.RegisterGPUDevices("local", gpuCol.Devices()); err != nil {
+	if err := db.RegisterGPUDevices(localNodeID, gpuCol.Devices()); err != nil {
 		log.Fatalf("failed to register GPU devices: %v", err)
 	}
-	db.RegisterNode("local", hostname, len(gpuCol.Devices()))
+	db.RegisterNode(localNodeID, hostname, len(gpuCol.Devices()))
 	logDevices(gpuCol.Devices())
 
 	// Host collector
-	hostCol := collector.NewHostCollector("local")
+	hostCol := collector.NewHostCollector(localNodeID)
 
 	// WebSocket hub
 	hub := api.NewHub()
@@ -109,7 +112,7 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 
 	// Optional vLLM collector
 	if cfg.VLLMUrl != "" {
-		vllmCol := collector.NewVLLMCollector(cfg.VLLMUrl, "local")
+		vllmCol := collector.NewVLLMCollector(cfg.VLLMUrl, localNodeID)
 		col.SetVLLM(vllmCol, cfg.VLLMInterval)
 		log.Printf("vLLM metrics collection enabled: %s (interval=%s)", cfg.VLLMUrl, cfg.VLLMInterval)
 	}
@@ -118,7 +121,7 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 
 	// Collection that wedges cannot be unstuck from inside: an NVML call is a
 	// cgo call with no timeout. Exit instead and let the restart policy work.
-	go watchdog.Run(ctx, db.LatestGPUMetricTs, cfg.CollectStallExitAfter, func(age time.Duration) {
+	go watchdog.Run(ctx, func() (int64, error) { return db.LatestGPUMetricTs(localNodeID) }, cfg.CollectStallExitAfter, func(age time.Duration) {
 		log.Fatalf("no GPU metrics for %s, exiting so the supervisor restarts us", age.Truncate(time.Second))
 	})
 
@@ -133,7 +136,7 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 	server := newAPIServer(db, hub, cfg)
 	// Hub mode leaves this off: there the data freshness reports on the
 	// agents, not on this process.
-	server.SetCollectorWatchdog(cfg.CollectStaleAfter)
+	server.SetCollectorWatchdog(localNodeID, cfg.CollectStaleAfter)
 	httpSrv := server.HTTPServer(cfg.Port)
 	go func() {
 		log.Printf("HTTP server listening on :%d", cfg.Port)
