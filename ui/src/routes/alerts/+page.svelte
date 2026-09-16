@@ -4,7 +4,7 @@
 	import NodeSelector from '$lib/components/NodeSelector.svelte';
 	import { alerts, nodes, selectedNode, fetchAlertHistory } from '$lib/stores/metrics';
 	import type { AlertEvent } from '$lib/stores/metrics';
-	import { alertName, alertValue, alertSummary, alertPeak, formatDuration, formatClock } from '$lib/utils/format';
+	import { alertName, alertSummary, alertPeak, alertThreshold, formatDuration, formatClock } from '$lib/utils/format';
 
 	let selectedRange = $state('24h');
 	let autoRefresh = $state(true);
@@ -149,7 +149,7 @@
 									>{alertPeak(event.kind, event.peak_value)}</td
 								>
 								<td class="px-4 py-2 text-right text-text-muted"
-									>{alertValue(event.kind, event.threshold)}</td
+									>{alertThreshold(event.kind, event.threshold)}</td
 								>
 								<td class="px-4 py-2 text-right text-text-muted">{formatClock(event.started_at)}</td>
 								<td class="px-4 py-2 text-right text-text-secondary">{duration(event)}</td>

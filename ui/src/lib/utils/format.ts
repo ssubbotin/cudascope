@@ -82,6 +82,13 @@ export function alertSummary(
 	return `now ${alertValue(kind, last)}, peak ${alertValue(kind, peak)}, threshold ${alertValue(kind, threshold)}`;
 }
 
+// A driver fault has no threshold to cross, so printing one reads as a
+// measurement that was never taken.
+export function alertThreshold(kind: string, threshold: number): string {
+	if (kind === 'xid') return '\u2014';
+	return alertValue(kind, threshold);
+}
+
 export function alertPeak(kind: string, peak: number): string {
 	if (kind === 'xid') return `${peak} error${peak === 1 ? '' : 's'}`;
 	return alertValue(kind, peak);
