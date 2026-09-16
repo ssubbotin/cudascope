@@ -145,7 +145,18 @@ func (e *Engine) Restore() error {
 	now := e.now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	adopted := 0
 	for _, ev := range evs {
+		if !e.enabled(ev.Kind) {
+			// The threshold was turned off between runs. Leaving the row open
+			// would keep it in the journal, unresolved, for ever.
+			if err := e.store.CloseAlertEvent(ev.ID, now.Unix(), ev.LastValue, ev.PeakValue); err != nil {
+				log.Printf("alerts: close disabled %s on %s: %v", ev.Kind, ev.NodeID, err)
+			}
+			continue
+		}
+
 		gpu := nodeLevel
 		if ev.GPUID != nil {
 			gpu = *ev.GPUID
@@ -155,11 +166,29 @@ func (e *Engine) Restore() error {
 			open:        true,
 			lastPersist: now,
 		}
+		adopted++
 	}
-	if len(evs) > 0 {
-		log.Printf("alerts: adopted %d event(s) left open by the previous run", len(evs))
+	if adopted > 0 {
+		log.Printf("alerts: adopted %d event(s) left open by the previous run", adopted)
 	}
 	return nil
+}
+
+// enabled reports whether this kind is judged at all in this configuration.
+func (e *Engine) enabled(k Kind) bool {
+	switch k {
+	case KindTemperature:
+		return e.cfg.TempMax > 0
+	case KindGPUUtil:
+		return e.cfg.GPUUtil > 0
+	case KindMemUtil:
+		return e.cfg.MemUtil > 0
+	case KindNodeSilent:
+		return e.cfg.NodeOfflineAfter > 0
+	case KindCollectorStalled:
+		return e.cfg.LocalNodeID != "" && e.cfg.CollectStaleAfter > 0
+	}
+	return false
 }
 
 // Observe evaluates one batch of GPU samples. Called from the collection
@@ -211,6 +240,12 @@ func (e *Engine) Sweep() {
 		e.mu.Lock()
 		for _, n := range seen {
 			if n.LastSeen <= 0 {
+				continue
+			}
+			if n.NodeID == e.cfg.LocalNodeID {
+				// This node is judged by its collection, through
+				// collector_stalled. Watching its heartbeat too reported one
+				// stalled collector as two separate alerts.
 				continue
 			}
 			if n.GPUCount == 0 {

@@ -458,3 +458,57 @@ func TestANodeWithNoRegisteredGPUsIsNotWatched(t *testing.T) {
 		t.Fatalf("a node with no GPUs raised %d events", got)
 	}
 }
+
+// Standalone watches its own node through its collection, which is what
+// collector_stalled reports. Judging the same node by its heartbeat as well
+// raised two alerts about one stalled collector.
+func TestTheLocalNodeIsNotWatchedTwice(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(testConfig(), store, c.now) // LocalNodeID is "local"
+
+	store.lastSeen["local"] = c.now().Unix()
+	store.lastSeen["gpu-node-1"] = c.now().Unix()
+	store.latestTs["local"] = c.now().Unix()
+
+	c.advance(10 * time.Minute)
+	e.Sweep()
+
+	kinds := map[Kind]int{}
+	for _, ev := range e.Active() {
+		kinds[ev.Kind]++
+		if ev.Kind == KindNodeSilent && ev.NodeID == "local" {
+			t.Fatalf("the local node raised a silence alert as well: %+v", ev)
+		}
+	}
+	if kinds[KindCollectorStalled] != 1 {
+		t.Fatalf("want the stall reported once, got %v", kinds)
+	}
+	if kinds[KindNodeSilent] != 1 {
+		t.Fatalf("want the remote node still watched, got %v", kinds)
+	}
+}
+
+// Turning a threshold off must not strand whatever it had open: the event
+// would otherwise stay in the journal, open, for ever.
+func TestRestoreClosesEventsOfADisabledKind(t *testing.T) {
+	c, store := newClock(), newStore()
+	gpu := 0
+	store.restore = []Event{{
+		ID: 7, NodeID: "local", GPUID: &gpu, Kind: KindTemperature,
+		Threshold: 80, StartedAt: c.now().Unix() - 300, PeakValue: 91, LastValue: 88,
+	}}
+
+	cfg := testConfig()
+	cfg.TempMax = 0 // the operator turned temperature alerting off
+	e := New(cfg, store, c.now)
+	if err := e.Restore(); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	if got := len(e.Active()); got != 0 {
+		t.Fatalf("a disabled kind kept %d events open", got)
+	}
+	if store.closedAt[7] == 0 {
+		t.Fatal("the stranded event was not closed in the store")
+	}
+}

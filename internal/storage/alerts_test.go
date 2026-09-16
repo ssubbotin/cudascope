@@ -252,3 +252,61 @@ func TestNodeHeartbeatsReportEveryNodeWithItsGPUCount(t *testing.T) {
 		t.Fatalf("gpu count = %d, want 4", agent.GPUCount)
 	}
 }
+
+// A window asks "what was alerting during this period", so an event that
+// began before it and ended inside it belongs in the answer.
+func TestListAlertEventsCoversEventsThatStartedEarlier(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Unix()
+
+	longRun, err := db.OpenAlertEvent(sampleEvent("local", gpuPtr(0), alerts.KindTemperature, now-25*3600))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.CloseAlertEvent(longRun, now-3600, 70, 95); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	stillOpen, err := db.OpenAlertEvent(sampleEvent("local", gpuPtr(1), alerts.KindGPUUtil, now-48*3600))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	events, err := db.ListAlertEvents(AlertEventQuery{From: now - 24*3600, To: now, Limit: 10})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	seen := map[int64]bool{}
+	for _, e := range events {
+		seen[e.ID] = true
+	}
+	if !seen[longRun] {
+		t.Fatalf("an event that ended inside the window is missing: %+v", events)
+	}
+	if !seen[stillOpen] {
+		t.Fatalf("an event still open is missing: %+v", events)
+	}
+}
+
+// An alert that ended before the window began is out of it.
+func TestListAlertEventsLeavesOutWhatEndedEarlier(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Unix()
+
+	old, err := db.OpenAlertEvent(sampleEvent("local", gpuPtr(0), alerts.KindTemperature, now-72*3600))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.CloseAlertEvent(old, now-48*3600, 70, 95); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	events, err := db.ListAlertEvents(AlertEventQuery{From: now - 24*3600, To: now, Limit: 10})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("want nothing in the window, got %+v", events)
+	}
+}

@@ -74,9 +74,13 @@ func (db *DB) ListAlertEvents(q AlertEventQuery) ([]alerts.Event, error) {
 		limit = defaultAlertLimit
 	}
 
+	// Overlap, not containment: an alert that began before the window and
+	// ended inside it is exactly what somebody looking at the last 24 hours
+	// wants to see. Filtering on started_at alone hid every alert older than
+	// the window, including the ones still open.
 	query := `SELECT id, node_id, gpu_id, kind, threshold, started_at, ended_at, peak_value, last_value
-		FROM alert_events WHERE started_at >= ? AND started_at <= ?`
-	args := []any{q.From, q.To}
+		FROM alert_events WHERE started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)`
+	args := []any{q.To, q.From}
 
 	if q.NodeID != "" {
 		query += " AND node_id = ?"
