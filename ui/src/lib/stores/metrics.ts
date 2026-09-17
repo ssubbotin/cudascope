@@ -123,14 +123,23 @@ export const alerts = writable<AlertEvent[]>([]);
 export const latestVLLM = writable<VLLMMetrics | null>(null);
 export const vllmHistory = writable<VLLMMetrics[]>([]);
 
-// Sparkline buffers: keep last 120 readings per GPU (keyed by "node:gpu_id")
-const SPARKLINE_SIZE = 120;
+// Sparkline buffers hold a stretch of time, not a count of samples.
+//
+// Counting samples meant the GPU plot covered two minutes (one sample a
+// second) while the vLLM plot beside it covered ten (one every five), so the
+// same busy period appeared in different places on two charts standing side
+// by side, and an idle-looking GPU sat next to a busy-looking engine.
+const SPARKLINE_WINDOW = '5m';
+const SPARKLINE_WINDOW_SECONDS = 300;
 
-// Windows that hold exactly SPARKLINE_SIZE samples at the default collection
-// intervals, so a seeded buffer is the same length as one filled from the
-// stream.
-const SPARKLINE_RANGE_GPU = '2m'; // 120 samples at one per second
-const SPARKLINE_RANGE_VLLM = '10m'; // 120 samples at one per five seconds
+// trimToWindow drops what has fallen out of the window. The newest sample is
+// the reference, so a series that stopped arriving keeps its shape instead of
+// emptying itself.
+function trimToWindow<T extends { ts: number }>(points: T[]): T[] {
+	if (points.length === 0) return points;
+	const cutoff = points[points.length - 1].ts - SPARKLINE_WINDOW_SECONDS;
+	return points[0].ts >= cutoff ? points : points.filter((p) => p.ts >= cutoff);
+}
 export const gpuHistory = writable<Map<string, GPUMetrics[]>>(new Map());
 export const hostHistory = writable<HostMetrics[]>([]);
 
@@ -159,9 +168,7 @@ onMessage((data: any) => {
 				// holds: seeding from the API and the stream overlap by a second
 				// or two at page load.
 				if (arr.length > 0 && gpu.ts <= arr[arr.length - 1].ts) continue;
-				arr.push({ ...gpu, node_id: nodeId });
-				if (arr.length > SPARKLINE_SIZE) arr = arr.slice(-SPARKLINE_SIZE);
-				map.set(key, arr);
+				map.set(key, trimToWindow([...arr, { ...gpu, node_id: nodeId }]));
 			}
 			return new Map(map);
 		});
@@ -174,9 +181,8 @@ onMessage((data: any) => {
 			return new Map(map);
 		});
 		hostHistory.update((arr) => {
-			arr.push(data.host);
-			if (arr.length > SPARKLINE_SIZE) arr = arr.slice(-SPARKLINE_SIZE);
-			return [...arr];
+			if (arr.length > 0 && data.host.ts <= arr[arr.length - 1].ts) return arr;
+			return trimToWindow([...arr, data.host]);
 		});
 	}
 
@@ -184,9 +190,7 @@ onMessage((data: any) => {
 		latestVLLM.set(data.vllm);
 		vllmHistory.update((arr) => {
 			if (arr.length > 0 && data.vllm.ts <= arr[arr.length - 1].ts) return arr;
-			arr.push(data.vllm);
-			if (arr.length > SPARKLINE_SIZE) arr = arr.slice(-SPARKLINE_SIZE);
-			return [...arr];
+			return trimToWindow([...arr, data.vllm]);
 		});
 	}
 
@@ -243,24 +247,32 @@ export async function fetchStatus() {
 // the buffers live in this module and survive it.
 async function seedSparklines(deviceList: GPUDevice[], withVLLM: boolean) {
 	const work: Promise<unknown>[] = deviceList.map(async (device) => {
-		const points = await fetchGPUHistory(device.id, SPARKLINE_RANGE_GPU, device.node_id);
+		const points = await fetchGPUHistory(device.id, SPARKLINE_WINDOW, device.node_id);
 		if (points.length === 0) return;
 
 		gpuHistory.update((map) => {
 			const key = gpuKey(device.node_id, device.id);
 			// The stream may have arrived first; it is more current than this.
 			if ((map.get(key)?.length ?? 0) > 0) return map;
-			map.set(key, points.slice(-SPARKLINE_SIZE));
+			map.set(key, trimToWindow(points));
 			return new Map(map);
 		});
 	});
 
+	work.push(
+		(async () => {
+			const points = await fetchHostHistory(SPARKLINE_WINDOW);
+			if (points.length === 0) return;
+			hostHistory.update((arr) => (arr.length > 0 ? arr : trimToWindow(points)));
+		})()
+	);
+
 	if (withVLLM) {
 		work.push(
 			(async () => {
-				const points = await fetchVLLMHistory(SPARKLINE_RANGE_VLLM);
+				const points = await fetchVLLMHistory(SPARKLINE_WINDOW);
 				if (points.length === 0) return;
-				vllmHistory.update((arr) => (arr.length > 0 ? arr : points.slice(-SPARKLINE_SIZE)));
+				vllmHistory.update((arr) => (arr.length > 0 ? arr : trimToWindow(points)));
 			})()
 		);
 	}
