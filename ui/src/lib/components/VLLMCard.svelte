@@ -50,9 +50,9 @@
 						{formatTps(metrics.token_throughput)} tok/s
 					</span>
 				</div>
-				{#if throughputData.length > 1}
-					<Sparkline data={throughputData} height={28} color="var(--color-accent)" />
-				{/if}
+				<!-- Always rendered, so the card keeps its height while the
+				     buffer fills. -->
+				<Sparkline data={throughputData} height={28} color="var(--color-accent)" />
 			</div>
 
 			<!-- Active requests -->

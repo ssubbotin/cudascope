@@ -23,9 +23,12 @@ export function formatTemp(c: number): string {
 }
 
 export function formatNetRate(bytesPerSec: number): string {
-	if (bytesPerSec === 0) return '0 B/s';
-	const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-	const i = Math.floor(Math.log(bytesPerSec) / Math.log(1000));
+	if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return '0 B/s';
+
+	const units = ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s'];
+	// Clamped: a stored counter reset used to land past the end of this list
+	// and print the rate with "undefined" where the unit belongs.
+	const i = Math.min(Math.floor(Math.log(bytesPerSec) / Math.log(1000)), units.length - 1);
 	return (bytesPerSec / Math.pow(1000, i)).toFixed(1) + ' ' + units[i];
 }
 

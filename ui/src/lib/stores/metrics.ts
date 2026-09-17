@@ -125,6 +125,12 @@ export const vllmHistory = writable<VLLMMetrics[]>([]);
 
 // Sparkline buffers: keep last 120 readings per GPU (keyed by "node:gpu_id")
 const SPARKLINE_SIZE = 120;
+
+// Windows that hold exactly SPARKLINE_SIZE samples at the default collection
+// intervals, so a seeded buffer is the same length as one filled from the
+// stream.
+const SPARKLINE_RANGE_GPU = '2m'; // 120 samples at one per second
+const SPARKLINE_RANGE_VLLM = '10m'; // 120 samples at one per five seconds
 export const gpuHistory = writable<Map<string, GPUMetrics[]>>(new Map());
 export const hostHistory = writable<HostMetrics[]>([]);
 
@@ -149,6 +155,10 @@ onMessage((data: any) => {
 			for (const gpu of data.gpus) {
 				const key = gpuKey(nodeId, gpu.gpu_id);
 				let arr = map.get(key) || [];
+				// A sample no newer than the last one is one the buffer already
+				// holds: seeding from the API and the stream overlap by a second
+				// or two at page load.
+				if (arr.length > 0 && gpu.ts <= arr[arr.length - 1].ts) continue;
 				arr.push({ ...gpu, node_id: nodeId });
 				if (arr.length > SPARKLINE_SIZE) arr = arr.slice(-SPARKLINE_SIZE);
 				map.set(key, arr);
@@ -173,6 +183,7 @@ onMessage((data: any) => {
 	if (data.type === 'vllm_metrics' && data.vllm) {
 		latestVLLM.set(data.vllm);
 		vllmHistory.update((arr) => {
+			if (arr.length > 0 && data.vllm.ts <= arr[arr.length - 1].ts) return arr;
 			arr.push(data.vllm);
 			if (arr.length > SPARKLINE_SIZE) arr = arr.slice(-SPARKLINE_SIZE);
 			return [...arr];
@@ -216,9 +227,45 @@ export async function fetchStatus() {
 		if (data.processes) processes.set(data.processes);
 		alerts.set(data.alerts ?? []);
 		if (data.vllm) latestVLLM.set(data.vllm);
+
+		await seedSparklines(data.devices ?? [], !!data.vllm);
 	} catch (e) {
 		console.error('Failed to fetch status:', e);
 	}
+}
+
+// Fill the sparkline buffers from stored history.
+//
+// They are fed by the stream, so on a freshly loaded page they start empty:
+// the card renders without its sparkline and grows one a second or two later.
+// Seeding them makes a reloaded page look like one that has been open for a
+// while, which is what it looked like after any client-side navigation, since
+// the buffers live in this module and survive it.
+async function seedSparklines(deviceList: GPUDevice[], withVLLM: boolean) {
+	const work: Promise<unknown>[] = deviceList.map(async (device) => {
+		const points = await fetchGPUHistory(device.id, SPARKLINE_RANGE_GPU, device.node_id);
+		if (points.length === 0) return;
+
+		gpuHistory.update((map) => {
+			const key = gpuKey(device.node_id, device.id);
+			// The stream may have arrived first; it is more current than this.
+			if ((map.get(key)?.length ?? 0) > 0) return map;
+			map.set(key, points.slice(-SPARKLINE_SIZE));
+			return new Map(map);
+		});
+	});
+
+	if (withVLLM) {
+		work.push(
+			(async () => {
+				const points = await fetchVLLMHistory(SPARKLINE_RANGE_VLLM);
+				if (points.length === 0) return;
+				vllmHistory.update((arr) => (arr.length > 0 ? arr : points.slice(-SPARKLINE_SIZE)));
+			})()
+		);
+	}
+
+	await Promise.all(work);
 }
 
 // Parse a range string like "5m", "1h", "24h", "7d", "30d" into seconds
