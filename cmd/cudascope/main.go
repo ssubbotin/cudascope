@@ -123,6 +123,7 @@ func runStandalone(ctx context.Context, cancel context.CancelFunc, cfg *config.C
 	col := collector.New(gpuCol, hostCol, db, hub, cfg.CollectInterval, cfg.HostInterval, cfg.ProcessInterval)
 	col.SetAlerts(engine)
 	enableVLLM(col, cfg, localNodeID)
+	enableOllama(col, cfg, localNodeID)
 
 	go col.Run(ctx)
 	watchXid(ctx, gpuCol, func(gpuID int, xid uint64) {
@@ -232,6 +233,7 @@ func runAgent(ctx context.Context, cancel context.CancelFunc, cfg *config.Config
 	// Start collector with agent sink (no broadcast — no local WS clients)
 	col := collector.New(gpuCol, hostCol, agentSink, nil, cfg.CollectInterval, cfg.HostInterval, cfg.ProcessInterval)
 	enableVLLM(col, cfg, nodeID)
+	enableOllama(col, cfg, nodeID)
 	go col.Run(ctx)
 
 	// The hub holds the journal, so an agent forwards what the driver tells
@@ -299,6 +301,21 @@ func enableVLLM(col *collector.Collector, cfg *config.Config, nodeID string) {
 	}
 	col.SetVLLM(collector.NewVLLMCollector(cfg.VLLMUrl, nodeID), cfg.VLLMInterval)
 	log.Printf("vLLM metrics collection enabled: %s (interval=%s)", cfg.VLLMUrl, cfg.VLLMInterval)
+}
+
+// enableOllama turns on ollama collection when a URL is configured. Shared
+// by standalone and agent mode for the same reason enableVLLM is.
+//
+// Ollama publishes no counters and no Prometheus endpoint, so what is
+// collected here is the state of the moment: which models are held in
+// memory, how much of each one is on the card, and when the keep alive will
+// unload them.
+func enableOllama(col *collector.Collector, cfg *config.Config, nodeID string) {
+	if cfg.OllamaURL == "" {
+		return
+	}
+	col.SetOllama(collector.NewOllamaCollector(cfg.OllamaURL, nodeID), cfg.OllamaInterval)
+	log.Printf("ollama collection enabled: %s (interval=%s)", cfg.OllamaURL, cfg.OllamaInterval)
 }
 
 // watchXid starts the Xid event loop when the driver allows it. A driver

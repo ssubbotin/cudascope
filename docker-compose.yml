@@ -29,6 +29,10 @@ services:
       # the default too, and an empty CUDASCOPE_VLLM_URL is how vLLM
       # collection is turned off.
       - CUDASCOPE_VLLM_URL=${CUDASCOPE_VLLM_URL-http://127.0.0.1:8000}
+      # Empty by default: ollama is worth watching on the hosts that run it,
+      # and asking for /api/ps on a host that does not would be one failed
+      # request in the log every ten seconds.
+      - CUDASCOPE_OLLAMA_URL=${CUDASCOPE_OLLAMA_URL-}
 
 volumes:
   cudascope-data:

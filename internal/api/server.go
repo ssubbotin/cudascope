@@ -121,6 +121,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/host/metrics", s.handleHostMetrics)
 	s.mux.HandleFunc("/api/v1/vllm/metrics", s.handleVLLMMetrics)
 	s.mux.HandleFunc("/api/v1/vllm/status", s.handleVLLMStatus)
+	s.mux.HandleFunc("/api/v1/ollama/metrics", s.handleOllamaMetrics)
+	s.mux.HandleFunc("/api/v1/ollama/status", s.handleOllamaStatus)
 	s.mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
 	s.mux.HandleFunc("/api/v1/alerts/history", s.handleAlertHistory)
 	s.mux.HandleFunc("/api/v1/ws", s.hub.HandleWS)
@@ -133,6 +135,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/ingest/host-metrics", s.handleIngestHostMetrics)
 	s.mux.HandleFunc("/api/v1/ingest/gpu-processes", s.handleIngestGPUProcesses)
 	s.mux.HandleFunc("/api/v1/ingest/vllm-metrics", s.handleIngestVLLMMetrics)
+	s.mux.HandleFunc("/api/v1/ingest/ollama-metrics", s.handleIngestOllamaMetrics)
 	s.mux.HandleFunc("/api/v1/ingest/xid", s.handleIngestXid)
 
 	// Serve UI
@@ -361,6 +364,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		resp["vllm"] = vllm
 	}
 
+	ollama, err := s.store.ReadLatestOllama(nodeFilter)
+	if err != nil {
+		log.Printf("get ollama metrics: %v", err)
+	}
+	if ollama != nil {
+		resp["ollama"] = ollama
+	}
+
 	writeJSON(w, resp)
 }
 
@@ -478,6 +489,39 @@ func (s *Server) handleVLLMStatus(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.URL.Query().Get("node")
 
 	m, err := s.store.ReadLatestVLLMMetrics(nodeID)
+	if err != nil {
+		httpError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if m == nil {
+		writeJSON(w, map[string]any{})
+		return
+	}
+	writeJSON(w, m)
+}
+
+// --- ollama endpoints ---
+
+func (s *Server) handleOllamaMetrics(w http.ResponseWriter, r *http.Request) {
+	from, to := parseTimeRange(r)
+	nodeID := r.URL.Query().Get("node")
+
+	points, err := s.store.ReadOllamaHistory(nodeID, from, to)
+	if err != nil {
+		httpError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if points == nil {
+		writeJSON(w, []struct{}{})
+		return
+	}
+	writeJSON(w, points)
+}
+
+func (s *Server) handleOllamaStatus(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.URL.Query().Get("node")
+
+	m, err := s.store.ReadLatestOllama(nodeID)
 	if err != nil {
 		httpError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -649,6 +693,35 @@ func (s *Server) handleIngestVLLMMetrics(w http.ResponseWriter, r *http.Request)
 		NodeID:    m.NodeID,
 		Timestamp: time.Now().Unix(),
 		VLLM:      &m,
+	})
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleIngestOllamaMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var m collector.OllamaMetrics
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		httpError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.WriteOllamaMetrics(&m); err != nil {
+		httpError(w, "write ollama metrics: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.store.UpdateNodeSeen(m.NodeID)
+
+	s.hub.Broadcast(collector.Snapshot{
+		Type:      "ollama_metrics",
+		NodeID:    m.NodeID,
+		Timestamp: time.Now().Unix(),
+		Ollama:    &m,
 	})
 
 	w.WriteHeader(http.StatusOK)

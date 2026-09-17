@@ -14,6 +14,7 @@ func base() *Config {
 		HostInterval:    5 * time.Second,
 		ProcessInterval: 5 * time.Second,
 		VLLMInterval:    5 * time.Second,
+		OllamaInterval:  10 * time.Second,
 	}
 }
 

@@ -376,3 +376,104 @@ func (db *DB) LatestGPUMetricTs(nodeID string) (int64, error) {
 	}
 	return ts.Int64, nil
 }
+
+// ReadLatestOllama returns the newest ollama reading for a node: the models
+// it was holding at that tick. It is selected by MAX(ts) the way the process
+// list is, because taking every row inside a window would show a model that
+// has since been unloaded, with its memory still counted.
+func (db *DB) ReadLatestOllama(nodeID string) (*collector.OllamaMetrics, error) {
+	if nodeID == "" {
+		nodeID = "local"
+	}
+	cutoff := db.freshCutoff()
+
+	var (
+		ts      int64
+		loaded  int
+		version string
+	)
+	err := db.conn.QueryRow(`SELECT ts, loaded, version FROM ollama_ticks
+		WHERE node_id = ? AND ts >= ? ORDER BY ts DESC LIMIT 1`, nodeID, cutoff).
+		Scan(&ts, &loaded, &version)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// An empty slice rather than a nil one: the JSON says "nothing loaded"
+	// either way, and a reader of the API should not have to tell null from
+	// [] to learn the same thing.
+	m := &collector.OllamaMetrics{
+		NodeID:    nodeID,
+		Timestamp: ts,
+		Version:   version,
+		Models:    []collector.OllamaModel{},
+	}
+	if loaded == 0 {
+		return m, nil
+	}
+
+	rows, err := db.conn.Query(`SELECT model, size_bytes, vram_bytes, context_length, expires_at
+		FROM ollama_models_raw WHERE node_id = ? AND ts = ? ORDER BY model`, nodeID, ts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			model   collector.OllamaModel
+			expires sql.NullInt64
+		)
+		if err := rows.Scan(&model.Name, &model.SizeBytes, &model.VRAMBytes,
+			&model.ContextLength, &expires); err != nil {
+			return nil, err
+		}
+		model.ExpiresAt = expires.Int64
+		m.Models = append(m.Models, model)
+	}
+	return m, rows.Err()
+}
+
+// OllamaPoint is one tick of ollama history: how much was held in memory
+// and on the card, and by how many models.
+type OllamaPoint struct {
+	Timestamp int64  `json:"ts"`
+	Loaded    int    `json:"loaded"`
+	SizeBytes int64  `json:"size_bytes"`
+	VRAMBytes int64  `json:"vram_bytes"`
+	Models    string `json:"models"`
+}
+
+// ReadOllamaHistory returns one point per tick over a window. Ticks with
+// nothing loaded are part of the answer: a chart that skipped them would
+// draw a busy server through the hours it was idle.
+func (db *DB) ReadOllamaHistory(nodeID string, from, to int64) ([]OllamaPoint, error) {
+	if nodeID == "" {
+		nodeID = "local"
+	}
+
+	rows, err := db.conn.Query(`SELECT t.ts, t.loaded,
+			COALESCE(SUM(m.size_bytes), 0), COALESCE(SUM(m.vram_bytes), 0),
+			COALESCE(GROUP_CONCAT(m.model, ', '), '')
+		FROM ollama_ticks t
+		LEFT JOIN ollama_models_raw m ON m.ts = t.ts AND m.node_id = t.node_id
+		WHERE t.node_id = ? AND t.ts >= ? AND t.ts <= ?
+		GROUP BY t.ts ORDER BY t.ts`, nodeID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []OllamaPoint
+	for rows.Next() {
+		var p OllamaPoint
+		if err := rows.Scan(&p.Timestamp, &p.Loaded, &p.SizeBytes, &p.VRAMBytes, &p.Models); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

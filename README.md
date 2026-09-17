@@ -13,6 +13,7 @@ Then open [http://localhost:9090](http://localhost:9090).
 - **Direct NVML access** via [go-nvml](https://github.com/NVIDIA/go-nvml) - no nvidia-smi parsing
 - **Throttle reasons, ECC counters and Xid faults** - why a card slowed down, and when the driver reported a fault
 - **vLLM integration** - scrapes vLLM `/metrics` for tok/s, KV cache, latency, active model
+- **Ollama integration** - which model is loaded, how much of it fits in VRAM, when it unloads
 - **Embedded storage** - SQLite with automatic rollup retention (raw 1s -> 1m -> 1h)
 - **Single binary** - Go backend with embedded Svelte 5 SPA (go:embed)
 - **Zero dependencies** - no Prometheus, no Grafana, no InfluxDB
@@ -77,6 +78,8 @@ All settings via environment variables or CLI flags:
 | `CUDASCOPE_CORS_ORIGIN` | `--cors-origin` | - | Origin allowed to call the API from another site |
 | `CUDASCOPE_VLLM_URL` | `--vllm-url` | - | vLLM endpoint URL (e.g. `http://localhost:8000`) |
 | `CUDASCOPE_VLLM_INTERVAL` | `--vllm-interval` | `5s` | vLLM metrics scrape interval |
+| `CUDASCOPE_OLLAMA_URL` | `--ollama-url` | - | ollama base URL (e.g. `http://localhost:11434`) |
+| `CUDASCOPE_OLLAMA_INTERVAL` | `--ollama-interval` | `10s` | ollama poll interval |
 | `CUDASCOPE_ALERT_TEMP` | `--alert-temp` | `0` | Temperature alert threshold (C) |
 | `CUDASCOPE_ALERT_GPU_UTIL` | `--alert-gpu-util` | `0` | GPU utilization alert (%) |
 | `CUDASCOPE_ALERT_MEM_UTIL` | `--alert-mem-util` | `0` | Memory utilization alert (%) |
@@ -86,7 +89,7 @@ All settings via environment variables or CLI flags:
 | `CUDASCOPE_NODE_OFFLINE_AFTER` | `--node-offline-after` | `1m` | Silence after which a node counts as offline and raises an alert |
 | `CUDASCOPE_RETENTION_ALERTS` | `--retention-alerts` | `2160h` | Closed alert event retention (90d) |
 
-Alert thresholds of `0` mean disabled. vLLM URL empty means disabled.
+Alert thresholds of `0` mean disabled. An empty vLLM or ollama URL means disabled.
 
 ## Features
 
@@ -95,6 +98,7 @@ Alert thresholds of `0` mean disabled. vLLM URL empty means disabled.
 - Per-GPU cards with real-time utilization, VRAM, temperature, fan, power, sparklines
 - Host card with CPU, RAM, disk, network
 - **vLLM card** with token throughput (tok/s), active/waiting requests, KV cache usage, latency, model name
+- **Ollama card** with the loaded model, its share of VRAM, and the keep alive countdown
 - Multi-GPU overlay charts (utilization, memory)
 - Host CPU and RAM history charts
 - GPU process list with VRAM usage
@@ -161,6 +165,35 @@ mode. Nothing has to be watching for an alert to fire or to be recorded.
 | `throttled` | A card held its own clocks back for longer than `--alert-for`. The entry names every reason seen while it lasted: power cap, thermal, hardware slowdown. Idle and configured clock limits are states rather than slowdowns and are left out |
 
 ![Alert journal](docs/screenshots/alerts.png)
+
+### Ollama Integration
+
+Monitor [ollama](https://github.com/ollama/ollama) alongside GPU metrics:
+
+```bash
+docker run -d --gpus all -p 9090:9090 \
+  -e CUDASCOPE_OLLAMA_URL=http://localhost:11434 \
+  -v cudascope-data:/data ssubbotin/cudascope
+```
+
+Ollama publishes no counters and no Prometheus endpoint, so there are no rates
+here. What it does publish is the state of the moment, and the state answers
+the questions that come up in practice:
+
+- **Which model is loaded**, and since when
+- **How much of it is in VRAM.** A share below the model's size means the rest
+  is in system memory, which is the usual reason a model answers slower than it
+  did yesterday. The GPU metrics cannot tell you this: the card looks busy
+  either way
+- **When the keep alive unloads it**, so a cold start is expected rather than a
+  surprise
+- **What was loaded earlier**, as a timeline of which models were resident and
+  for how long
+
+Works in standalone mode and in agent mode, the same way vLLM collection does.
+
+The readings are kept for as long as the raw samples are (`--retention-raw`,
+24 hours by default).
 
 ### vLLM Integration
 

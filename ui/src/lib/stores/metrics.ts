@@ -127,6 +127,51 @@ export const latestGPU = writable<GPUMetrics[]>([]);
 export const latestHosts = writable<Map<string, HostMetrics>>(new Map());
 export const processes = writable<GPUProcess[]>([]);
 export const alerts = writable<AlertEvent[]>([]);
+/**
+ * What an ollama server holds in memory. Ollama publishes no counters, so
+ * this is state rather than rates: which models are loaded, how much of each
+ * one is on the card, and when the keep alive unloads them.
+ */
+export interface OllamaModel {
+	name: string;
+	size_bytes: number;
+	vram_bytes: number;
+	context_length?: number;
+	/** Unix seconds, absent when the server did not say. */
+	expires_at?: number;
+}
+
+export interface OllamaMetrics {
+	node_id?: string;
+	ts: number;
+	version?: string;
+	models: OllamaModel[];
+}
+
+/** One tick of ollama history. */
+export interface OllamaPoint {
+	ts: number;
+	loaded: number;
+	size_bytes: number;
+	vram_bytes: number;
+	models: string;
+}
+
+export const latestOllama = writable<OllamaMetrics | null>(null);
+export const ollamaHistory = writable<OllamaPoint[]>([]);
+
+/** One stream reading folded into the shape the history endpoint returns. */
+function ollamaPoint(m: OllamaMetrics): OllamaPoint {
+	const models = m.models ?? [];
+	return {
+		ts: m.ts,
+		loaded: models.length,
+		size_bytes: models.reduce((sum, x) => sum + x.size_bytes, 0),
+		vram_bytes: models.reduce((sum, x) => sum + x.vram_bytes, 0),
+		models: models.map((x) => x.name).join(', ')
+	};
+}
+
 export const latestVLLM = writable<VLLMMetrics | null>(null);
 export const vllmHistory = writable<VLLMMetrics[]>([]);
 
@@ -201,6 +246,15 @@ onMessage((data: any) => {
 		});
 	}
 
+	if (data.type === 'ollama_metrics' && data.ollama) {
+		latestOllama.set(data.ollama);
+		ollamaHistory.update((arr) => {
+			const point = ollamaPoint(data.ollama);
+			if (arr.length > 0 && point.ts <= arr[arr.length - 1].ts) return arr;
+			return trimToWindow([...arr, point]);
+		});
+	}
+
 	// Nodes, devices and alerts used to arrive once, in the single status
 	// call made at mount, so an open tab could show a dead node as online
 	// and an alert count from page load.
@@ -238,8 +292,9 @@ export async function fetchStatus() {
 		if (data.processes) processes.set(data.processes);
 		alerts.set(data.alerts ?? []);
 		if (data.vllm) latestVLLM.set(data.vllm);
+		if (data.ollama) latestOllama.set(data.ollama);
 
-		await seedSparklines(data.devices ?? [], !!data.vllm);
+		await seedSparklines(data.devices ?? [], !!data.vllm, !!data.ollama);
 	} catch (e) {
 		console.error('Failed to fetch status:', e);
 	}
@@ -252,7 +307,7 @@ export async function fetchStatus() {
 // Seeding them makes a reloaded page look like one that has been open for a
 // while, which is what it looked like after any client-side navigation, since
 // the buffers live in this module and survive it.
-async function seedSparklines(deviceList: GPUDevice[], withVLLM: boolean) {
+async function seedSparklines(deviceList: GPUDevice[], withVLLM: boolean, withOllama: boolean) {
 	const work: Promise<unknown>[] = deviceList.map(async (device) => {
 		const points = await fetchGPUHistory(device.id, SPARKLINE_WINDOW, device.node_id);
 		if (points.length === 0) return;
@@ -280,6 +335,16 @@ async function seedSparklines(deviceList: GPUDevice[], withVLLM: boolean) {
 				const points = await fetchVLLMHistory(SPARKLINE_WINDOW);
 				if (points.length === 0) return;
 				vllmHistory.update((arr) => (arr.length > 0 ? arr : trimToWindow(points)));
+			})()
+		);
+	}
+
+	if (withOllama) {
+		work.push(
+			(async () => {
+				const points = await fetchOllamaHistory(SPARKLINE_WINDOW);
+				if (points.length === 0) return;
+				ollamaHistory.update((arr) => (arr.length > 0 ? arr : trimToWindow(points)));
 			})()
 		);
 	}
@@ -314,6 +379,14 @@ export async function fetchGPUHistory(gpuId: number, range: string, nodeId?: str
 }
 
 // Fetch historical vLLM metrics
+export async function fetchOllamaHistory(range: string, nodeId?: string): Promise<OllamaPoint[]> {
+	const params = new URLSearchParams({ range });
+	if (nodeId) params.set('node', nodeId);
+	const res = await fetch(`/api/v1/ollama/metrics?${params}`);
+	if (!res.ok) return [];
+	return res.json();
+}
+
 export async function fetchVLLMHistory(range: string, nodeId?: string): Promise<VLLMMetrics[]> {
 	try {
 		let url = `/api/v1/vllm/metrics?range=${range}`;

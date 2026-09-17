@@ -129,15 +129,51 @@ type VLLMMetrics struct {
 	NumPreemptions  int64   `json:"num_preemptions"`
 }
 
+// OllamaMetrics is one reading of an ollama server: which models it holds in
+// memory and how much of each one is on the GPU.
+//
+// Ollama publishes no counters, so there are no rates here. The numbers it
+// does publish are the state of the moment, and the state is what answers
+// the questions that matter: which model is loaded, whether it fits in the
+// card, and when the keep alive will unload it.
+type OllamaMetrics struct {
+	NodeID    string        `json:"node_id,omitempty"`
+	Timestamp int64         `json:"ts"`
+	Version   string        `json:"version,omitempty"`
+	Models    []OllamaModel `json:"models"`
+}
+
+// OllamaModel is one model held in memory.
+type OllamaModel struct {
+	Name string `json:"name"`
+	// SizeBytes is the whole model and VRAMBytes the part of it on the GPU.
+	// A VRAM share below the size means the rest is in system memory, which
+	// is the usual reason a model answers slower than it did yesterday.
+	SizeBytes     int64 `json:"size_bytes"`
+	VRAMBytes     int64 `json:"vram_bytes"`
+	ContextLength int64 `json:"context_length,omitempty"`
+	// ExpiresAt is when the keep alive unloads the model, in unix seconds.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
+}
+
+// OnGPU is the share of the model that sits in GPU memory, from 0 to 1.
+func (m OllamaModel) OnGPU() float64 {
+	if m.SizeBytes <= 0 {
+		return 0
+	}
+	return float64(m.VRAMBytes) / float64(m.SizeBytes)
+}
+
 // Snapshot is a complete point-in-time reading pushed via WebSocket.
 type Snapshot struct {
-	Type      string       `json:"type"`
-	NodeID    string       `json:"node_id,omitempty"`
-	Timestamp int64        `json:"ts"`
-	GPUs      []GPUMetrics `json:"gpus,omitempty"`
-	Host      *HostMetrics `json:"host,omitempty"`
-	Processes []GPUProcess `json:"processes,omitempty"`
-	VLLM      *VLLMMetrics `json:"vllm,omitempty"`
+	Type      string         `json:"type"`
+	NodeID    string         `json:"node_id,omitempty"`
+	Timestamp int64          `json:"ts"`
+	GPUs      []GPUMetrics   `json:"gpus,omitempty"`
+	Host      *HostMetrics   `json:"host,omitempty"`
+	Processes []GPUProcess   `json:"processes,omitempty"`
+	VLLM      *VLLMMetrics   `json:"vllm,omitempty"`
+	Ollama    *OllamaMetrics `json:"ollama,omitempty"`
 }
 
 // Node represents a registered agent node.

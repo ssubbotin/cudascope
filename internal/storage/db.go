@@ -49,6 +49,9 @@ var migration011 string
 //go:embed migrations/012_vllm_nullable_ratios.sql
 var migration012 string
 
+//go:embed migrations/013_ollama.sql
+var migration013 string
+
 // Options tunes the queries whose answer depends on how often this
 // deployment collects.
 type Options struct {
@@ -227,6 +230,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 012: %w", err)
 		}
 		log.Println("applied migration 012 (vLLM ratios may be absent)")
+	}
+
+	if version < 13 {
+		if _, err := db.conn.Exec(migration013); err != nil {
+			return fmt.Errorf("migration 013: %w", err)
+		}
+		log.Println("applied migration 013 (ollama loaded models)")
 	}
 
 	return nil

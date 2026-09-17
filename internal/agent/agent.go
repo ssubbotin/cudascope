@@ -146,6 +146,15 @@ func (a *Agent) WriteVLLMMetrics(m *collector.VLLMMetrics) error {
 	return a.post("/api/v1/ingest/vllm-metrics", m)
 }
 
+// WriteOllamaMetrics implements collector.MetricSink.
+func (a *Agent) WriteOllamaMetrics(m *collector.OllamaMetrics) error {
+	if m == nil {
+		return nil
+	}
+	m.NodeID = a.nodeID
+	return a.post("/api/v1/ingest/ollama-metrics", m)
+}
+
 // WriteXid reports a driver fault to the hub, where the thresholds and the
 // journal live.
 func (a *Agent) WriteXid(gpuID int, xid uint64) error {
