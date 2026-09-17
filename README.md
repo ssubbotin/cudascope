@@ -78,6 +78,7 @@ All settings via environment variables or CLI flags:
 | `CUDASCOPE_ALERT_TEMP` | `--alert-temp` | `0` | Temperature alert threshold (C) |
 | `CUDASCOPE_ALERT_GPU_UTIL` | `--alert-gpu-util` | `0` | GPU utilization alert (%) |
 | `CUDASCOPE_ALERT_MEM_UTIL` | `--alert-mem-util` | `0` | Memory utilization alert (%) |
+| `CUDASCOPE_ALERT_THROTTLE` | `--alert-throttle` | `true` | Record the stretches a card holds its own clocks back |
 | `CUDASCOPE_ALERT_FOR` | `--alert-for` | `30s` | How long a threshold must be exceeded before an alert opens |
 | `CUDASCOPE_ALERT_CLEAR` | `--alert-clear` | `1m` | How long a metric must be normal again before an alert closes |
 | `CUDASCOPE_NODE_OFFLINE_AFTER` | `--node-offline-after` | `1m` | Silence after which a node counts as offline and raises an alert |
@@ -148,6 +149,7 @@ mode. Nothing has to be watching for an alert to fire or to be recorded.
 | `node_silent` | A node with registered GPUs has not reported for `--node-offline-after` |
 | `collector_stalled` | Standalone only: local collection is older than `--collect-stale-after` |
 | `xid` | The driver reported an Xid fault on a card. A burst is one entry with a count and the newest code |
+| `throttled` | A card held its own clocks back for longer than `--alert-for`. The entry names every reason seen while it lasted: power cap, thermal, hardware slowdown. Idle and configured clock limits are states rather than slowdowns and are left out |
 
 ### vLLM Integration
 

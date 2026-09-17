@@ -32,6 +32,11 @@ const (
 	// reading. PeakValue counts the errors in the burst, LastValue is the
 	// newest code.
 	KindXid Kind = "xid"
+
+	// KindThrottled is the card holding its own clocks back. LastValue is
+	// the newest NVML reason mask, PeakValue the union of every reason seen
+	// while the event was open.
+	KindThrottled Kind = "throttled"
 )
 
 // nodeLevel is the GPU slot of an event that belongs to a whole node.
@@ -77,6 +82,11 @@ type Store interface {
 // kind.
 type Config struct {
 	TempMax, GPUUtil, MemUtil int
+
+	// Throttle records the stretches during which a card held its own clocks
+	// back. It answers "why was this job slower than yesterday", which is
+	// the question the mask on the dashboard raises and never answered.
+	Throttle bool
 
 	// For and Clear keep a value hovering at the threshold from filling the
 	// journal: the breach has to hold for For before an event opens, and
@@ -195,6 +205,8 @@ func (e *Engine) enabled(k Kind) bool {
 		return e.cfg.LocalNodeID != "" && e.cfg.CollectStaleAfter > 0
 	case KindXid:
 		return true // a driver fault is worth recording whatever is configured
+	case KindThrottled:
+		return e.cfg.Throttle
 	}
 	return false
 }
@@ -227,6 +239,18 @@ func (e *Engine) Observe(metrics []collector.GPUMetrics) {
 		if e.cfg.MemUtil > 0 {
 			k := key{node: node, gpu: m.GPUID, kind: KindMemUtil}
 			changed = e.evaluate(k, m.MemUtil, float64(e.cfg.MemUtil), now, e.cfg.For, e.cfg.Clear) || changed
+		}
+		if e.cfg.Throttle {
+			// The value is the reason mask itself, so the journal can say why
+			// rather than only that. Idle and the "someone set the clocks"
+			// reasons are states rather than slowdowns, and Throttled() leaves
+			// them out.
+			var reasons float64
+			if m.Throttled() {
+				reasons = float64(m.ThrottleReasons)
+			}
+			k := key{node: node, gpu: m.GPUID, kind: KindThrottled}
+			changed = e.evaluate(k, reasons, 1, now, e.cfg.For, e.cfg.Clear) || changed
 		}
 	}
 	e.mu.Unlock()
@@ -406,9 +430,7 @@ func (e *Engine) evaluate(k key, value, threshold float64, now time.Time, forDwe
 		c.clearSince = time.Time{}
 
 		if c.open {
-			if value > c.ev.PeakValue {
-				c.ev.PeakValue = value
-			}
+			c.ev.PeakValue = foldPeak(k.kind, c.ev.PeakValue, value)
 			c.ev.LastValue = value
 			e.persist(c, now)
 			return false
@@ -468,6 +490,20 @@ func (e *Engine) evaluate(k key, value, threshold float64, now time.Time, forDwe
 	log.Printf("alerts: %s on %s cleared after %s", k.kind, k.node, time.Duration(end-c.ev.StartedAt)*time.Second)
 	delete(e.cands, k)
 	return true
+}
+
+// foldPeak folds a new reading into the event's headline number. A
+// threshold breach keeps its extreme; a throttle mask keeps the union, so
+// the journal names every reason seen during the event rather than whichever
+// mask happened to be numerically largest.
+func foldPeak(kind Kind, peak, value float64) float64 {
+	if kind == KindThrottled {
+		return float64(uint64(peak) | uint64(value))
+	}
+	if value > peak {
+		return value
+	}
+	return peak
 }
 
 // persist pushes an open event's running values to the store, at most once
