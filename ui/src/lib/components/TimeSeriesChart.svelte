@@ -47,7 +47,7 @@
 	}
 
 	function buildOpts(): uPlot.Options {
-		const width = container?.clientWidth || 600;
+		const width = container.clientWidth;
 		const tc = themeColors();
 
 		const opts: uPlot.Options = {
@@ -116,7 +116,13 @@
 	}
 
 	function createChart() {
-		if (!container || timestamps.length < 2) return;
+		// A container of no width means the layout has not happened yet: the
+		// tab is in the background, or the panel is still hidden. Building the
+		// chart anyway used to fall back to 600 pixels and keep that width for
+		// ever, which drew the series into the left part of a wide panel and
+		// left the rest of it blank. The observer below builds it once the
+		// width arrives.
+		if (!container || container.clientWidth === 0 || timestamps.length < 2) return;
 		destroyChart();
 		chart = new uPlot(buildOpts(), buildData(), container);
 	}
@@ -129,21 +135,33 @@
 	}
 
 	function handleResize() {
-		if (chart && container) {
-			chart.setSize({ width: container.clientWidth, height });
+		if (!container) return;
+		const width = container.clientWidth;
+		if (width === 0) return;
+		// Born without a width, or not born at all while the data was short.
+		if (!chart) {
+			createChart();
+			return;
 		}
+		if (Math.round(chart.width) !== width) chart.setSize({ width, height });
 	}
+
+	// The window is not the only thing that changes a chart's width: a grid
+	// reflows, a panel is revealed, a scrollbar comes and goes, and none of
+	// those raise a window resize. Watching the container covers the window
+	// case as well, so it is the only listener.
+	let observer: ResizeObserver | null = null;
 
 	onMount(() => {
 		createChart();
-		window.addEventListener('resize', handleResize);
+		observer = new ResizeObserver(handleResize);
+		observer.observe(container);
 	});
 
 	onDestroy(() => {
+		observer?.disconnect();
+		observer = null;
 		destroyChart();
-		if (typeof window !== 'undefined') {
-			window.removeEventListener('resize', handleResize);
-		}
 	});
 
 	// React to data changes
