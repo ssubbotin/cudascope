@@ -31,8 +31,9 @@ var upgrader = websocket.Upgrader{
 // client's own writePump goroutine: gorilla/websocket panics on concurrent
 // writes, and the collector broadcasts from several goroutines.
 type wsClient struct {
-	conn *websocket.Conn
-	send chan []byte
+	conn      *websocket.Conn
+	send      chan []byte
+	writeWait time.Duration
 
 	done     chan struct{}
 	doneOnce sync.Once
@@ -49,12 +50,18 @@ func (c *wsClient) stop() {
 type Hub struct {
 	clients map[*wsClient]struct{}
 	mu      sync.RWMutex
+
+	// writeWait bounds a single frame write, wsWriteWait unless a test
+	// shortens it. Evicting a stalled client is one of the invariants here,
+	// and a test of it otherwise has to sit out the whole five seconds.
+	writeWait time.Duration
 }
 
 // NewHub creates a new WebSocket hub.
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[*wsClient]struct{}),
+		clients:   make(map[*wsClient]struct{}),
+		writeWait: wsWriteWait,
 	}
 }
 
@@ -74,9 +81,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c := &wsClient{
-		conn: conn,
-		send: make(chan []byte, wsSendQueue),
-		done: make(chan struct{}),
+		conn:      conn,
+		send:      make(chan []byte, wsSendQueue),
+		done:      make(chan struct{}),
+		writeWait: h.writeWait,
 	}
 
 	h.mu.Lock()
@@ -121,7 +129,7 @@ func (c *wsClient) writePump() {
 		case <-c.done:
 			return
 		case data := <-c.send:
-			if err := c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
+			if err := c.conn.SetWriteDeadline(time.Now().Add(c.writeWait)); err != nil {
 				c.conn.Close()
 				return
 			}

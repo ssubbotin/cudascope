@@ -19,6 +19,7 @@ type fakeHub struct {
 
 	failing atomic.Bool
 	block   chan struct{} // when non-nil, handlers wait on it
+	arrived chan struct{} // when non-nil, a handler reports itself here
 
 	mu       sync.Mutex
 	received [][]collector.GPUMetrics
@@ -31,6 +32,15 @@ func newFakeHub(t *testing.T) *fakeHub {
 	h := &fakeHub{}
 
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Buffered by its maker, and never waited on by a handler: a
+		// handler that blocked here would be the test holding up the very
+		// request it is watching for.
+		if h.arrived != nil {
+			select {
+			case h.arrived <- struct{}{}:
+			default:
+			}
+		}
 		if h.block != nil {
 			<-h.block
 		}
@@ -145,15 +155,14 @@ func TestTheBufferDropsTheOldestWhenItIsFull(t *testing.T) {
 func TestASlowSendDoesNotHoldUpAnotherSource(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.block = make(chan struct{})
+	hub.arrived = make(chan struct{}, 1)
 	a := New(hub.srv.URL, "gpu-node-1", Options{})
 
-	started := make(chan struct{})
-	go func() {
-		close(started)
-		a.WriteGPUMetrics(sample(0, 60))
-	}()
-	<-started
-	time.Sleep(50 * time.Millisecond) // let the first send reach the server
+	go a.WriteGPUMetrics(sample(0, 60))
+
+	// Wait for the hub to have the first request in its hands, rather than
+	// sleeping long enough that it probably does.
+	<-hub.arrived
 
 	done := make(chan struct{})
 	go func() {
