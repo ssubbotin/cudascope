@@ -114,11 +114,19 @@ type VLLMMetrics struct {
 	KVCacheUsage          float64 `json:"kv_cache_usage"` // 0-1
 	GenerationTokensTotal int64   `json:"generation_tokens_total"`
 	PromptTokensTotal     int64   `json:"prompt_tokens_total"`
-	TimeToFirstTokenAvg   float64 `json:"ttft_avg"`              // seconds
-	TimePerOutputTokenAvg float64 `json:"tpot_avg"`              // seconds
-	TokenThroughput       float64 `json:"token_throughput"`      // tok/s
-	PrefixCacheHitRate    float64 `json:"prefix_cache_hit_rate"` // 0-1
-	NumPreemptions        int64   `json:"num_preemptions"`
+	// These three are ratios over what happened between two scrapes, and a
+	// window where the denominator did not move has no value to report: no
+	// request finished, or no prompt was prefilled. A pointer so that
+	// "nothing was measured" and "the measurement was zero" stay apart. A
+	// zero here used to be stored like any reading, which drew the chart
+	// down to the floor for the whole of a long generation and dragged the
+	// rollup averages down with it.
+	TimeToFirstTokenAvg   *float64 `json:"ttft_avg"`              // seconds
+	TimePerOutputTokenAvg *float64 `json:"tpot_avg"`              // seconds
+	PrefixCacheHitRate    *float64 `json:"prefix_cache_hit_rate"` // 0-1
+
+	TokenThroughput float64 `json:"token_throughput"` // tok/s
+	NumPreemptions  int64   `json:"num_preemptions"`
 }
 
 // Snapshot is a complete point-in-time reading pushed via WebSocket.

@@ -163,36 +163,29 @@ func (v *VLLMCollector) Collect() (*VLLMMetrics, error) {
 		NumPreemptions:        int64(v.field(raw, "preemptions", "vllm:num_preemptions_total")),
 	}
 
-	// Compute TTFT average (delta of sum / delta of count)
+	// TTFT average over the window: delta of sum over delta of count. A
+	// window in which no request reached its first token has no average,
+	// and deltaRatio says so by returning nothing.
 	ttftSum := raw["vllm:time_to_first_token_seconds_sum"]
 	ttftCount := raw["vllm:time_to_first_token_seconds_count"]
-	if ttftCount > v.prevTTFTCount {
-		deltaSum := ttftSum - v.prevTTFTSum
-		deltaCount := ttftCount - v.prevTTFTCount
-		m.TimeToFirstTokenAvg = deltaSum / deltaCount
-	}
+	m.TimeToFirstTokenAvg = deltaRatio(ttftSum-v.prevTTFTSum, ttftCount-v.prevTTFTCount, ttftCount > v.prevTTFTCount)
 	v.prevTTFTSum = ttftSum
 	v.prevTTFTCount = ttftCount
 
-	// Compute TPOT average (delta of sum / delta of count)
+	// TPOT average over the window, on the same terms.
 	tpotSum := raw["vllm:time_per_output_token_seconds_sum"]
 	tpotCount := raw["vllm:time_per_output_token_seconds_count"]
-	if tpotCount > v.prevTPOTCount {
-		deltaSum := tpotSum - v.prevTPOTSum
-		deltaCount := tpotCount - v.prevTPOTCount
-		m.TimePerOutputTokenAvg = deltaSum / deltaCount
-	}
+	m.TimePerOutputTokenAvg = deltaRatio(tpotSum-v.prevTPOTSum, tpotCount-v.prevTPOTCount, tpotCount > v.prevTPOTCount)
 	v.prevTPOTSum = tpotSum
 	v.prevTPOTCount = tpotCount
 
-	// Compute prefix cache hit rate (delta hits / delta queries)
+	// Prefix cache hit rate over the window: delta hits over delta queries.
+	// The cache is queried while a prompt is prefilled, so a long generation
+	// is scrape after scrape with no new queries and no rate to report. That
+	// is what makes this the field the change was noticed on.
 	cacheHits := raw["vllm:prefix_cache_hits_total"]
 	cacheQueries := raw["vllm:prefix_cache_queries_total"]
-	if cacheQueries > v.prevCacheQueries {
-		deltaHits := cacheHits - v.prevCacheHits
-		deltaQueries := cacheQueries - v.prevCacheQueries
-		m.PrefixCacheHitRate = deltaHits / deltaQueries
-	}
+	m.PrefixCacheHitRate = deltaRatio(cacheHits-v.prevCacheHits, cacheQueries-v.prevCacheQueries, cacheQueries > v.prevCacheQueries)
 	v.prevCacheHits = cacheHits
 	v.prevCacheQueries = cacheQueries
 
@@ -307,4 +300,16 @@ func parsePromLine(line string) (name string, value float64, ok bool) {
 	}
 
 	return name, val, true
+}
+
+// deltaRatio is one window's ratio, or nothing when the window holds no
+// measurement. moved says whether the denominator's counter advanced at all:
+// a counter that stood still means no request finished and no prompt was
+// prefilled, which is a different thing from a ratio that came out zero.
+func deltaRatio(deltaSum, deltaCount float64, moved bool) *float64 {
+	if !moved || deltaCount <= 0 {
+		return nil
+	}
+	v := deltaSum / deltaCount
+	return &v
 }

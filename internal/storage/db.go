@@ -46,6 +46,9 @@ var migration010 string
 //go:embed migrations/011_alert_power_limit.sql
 var migration011 string
 
+//go:embed migrations/012_vllm_nullable_ratios.sql
+var migration012 string
+
 // Options tunes the queries whose answer depends on how often this
 // deployment collects.
 type Options struct {
@@ -217,6 +220,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 011: %w", err)
 		}
 		log.Println("applied migration 011 (power limit on throttle events)")
+	}
+
+	if version < 12 {
+		if _, err := db.conn.Exec(migration012); err != nil {
+			return fmt.Errorf("migration 012: %w", err)
+		}
+		log.Println("applied migration 012 (vLLM ratios may be absent)")
 	}
 
 	return nil
