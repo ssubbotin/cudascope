@@ -24,9 +24,10 @@ func (db *DB) OpenAlertEvent(e alerts.Event) (int64, error) {
 	defer db.mu.Unlock()
 
 	res, err := db.conn.Exec(`INSERT INTO alert_events
-		(node_id, gpu_id, kind, threshold, started_at, peak_value, last_value)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		e.NodeID, gpuIDArg(e.GPUID), string(e.Kind), e.Threshold, e.StartedAt, e.PeakValue, e.LastValue)
+		(node_id, gpu_id, kind, threshold, started_at, peak_value, last_value, power_limit)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.NodeID, gpuIDArg(e.GPUID), string(e.Kind), e.Threshold, e.StartedAt,
+		e.PeakValue, e.LastValue, powerLimitArg(e.PowerLimit))
 	if err != nil {
 		return 0, fmt.Errorf("open alert event: %w", err)
 	}
@@ -57,7 +58,7 @@ func (db *DB) CloseAlertEvent(id, endedAt int64, last, peak float64) error {
 // OpenAlertEvents returns the events still open, so a restarting process
 // can adopt them instead of opening duplicates.
 func (db *DB) OpenAlertEvents() ([]alerts.Event, error) {
-	rows, err := db.conn.Query(`SELECT id, node_id, gpu_id, kind, threshold, started_at, ended_at, peak_value, last_value
+	rows, err := db.conn.Query(`SELECT id, node_id, gpu_id, kind, threshold, started_at, ended_at, peak_value, last_value, power_limit
 		FROM alert_events WHERE ended_at IS NULL ORDER BY started_at`)
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func (db *DB) ListAlertEvents(q AlertEventQuery) ([]alerts.Event, error) {
 	// ended inside it is exactly what somebody looking at the last 24 hours
 	// wants to see. Filtering on started_at alone hid every alert older than
 	// the window, including the ones still open.
-	query := `SELECT id, node_id, gpu_id, kind, threshold, started_at, ended_at, peak_value, last_value
+	query := `SELECT id, node_id, gpu_id, kind, threshold, started_at, ended_at, peak_value, last_value, power_limit
 		FROM alert_events WHERE started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)`
 	args := []any{q.To, q.From}
 
@@ -128,12 +129,14 @@ func scanAlertEvents(rows *sql.Rows) ([]alerts.Event, error) {
 			e     alerts.Event
 			gpu   sql.NullInt64
 			ended sql.NullInt64
+			limit sql.NullFloat64
 			kind  string
 		)
 		if err := rows.Scan(&e.ID, &e.NodeID, &gpu, &kind, &e.Threshold,
-			&e.StartedAt, &ended, &e.PeakValue, &e.LastValue); err != nil {
+			&e.StartedAt, &ended, &e.PeakValue, &e.LastValue, &limit); err != nil {
 			return nil, fmt.Errorf("scan alert event: %w", err)
 		}
+		e.PowerLimit = limit.Float64
 		e.Kind = alerts.Kind(kind)
 		if gpu.Valid {
 			id := int(gpu.Int64)
@@ -146,6 +149,15 @@ func scanAlertEvents(rows *sql.Rows) ([]alerts.Event, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// powerLimitArg keeps the column NULL for the kinds that have no limit to
+// record, so "not applicable" and "the card reported zero" stay apart.
+func powerLimitArg(w float64) any {
+	if w <= 0 {
+		return nil
+	}
+	return w
 }
 
 func gpuIDArg(id *int) any {

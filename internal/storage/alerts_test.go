@@ -1,10 +1,12 @@
 package storage
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sergey/cudascope/internal/alerts"
+	"github.com/sergey/cudascope/internal/collector"
 )
 
 func gpuPtr(id int) *int { return &id }
@@ -309,4 +311,127 @@ func TestListAlertEventsLeavesOutWhatEndedEarlier(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("want nothing in the window, got %+v", events)
 	}
+}
+
+// The power limit a throttle was judged against is recorded with the event
+// and comes back with it, because the journal shows it in the column the
+// threshold of a temperature alert occupies.
+func TestThePowerLimitSurvivesTheRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Unix()
+
+	capped := sampleEvent("local", gpuPtr(0), alerts.KindThrottled, now)
+	capped.Threshold = 1
+	capped.PeakValue = 4
+	capped.PowerLimit = 600
+	if _, err := db.OpenAlertEvent(capped); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	events, err := db.ListAlertEvents(AlertEventQuery{From: now - 60, To: now + 60})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want one event, got %d", len(events))
+	}
+	if events[0].PowerLimit != 600 {
+		t.Fatalf("power limit = %v", events[0].PowerLimit)
+	}
+}
+
+// A kind with no limit to record leaves the column empty, so "not
+// applicable" and "the card answered zero watts" stay apart.
+func TestAnEventWithoutAPowerLimitReadsBackAsZero(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Unix()
+
+	if _, err := db.OpenAlertEvent(sampleEvent("local", gpuPtr(0), alerts.KindTemperature, now)); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	events, err := db.ListAlertEvents(AlertEventQuery{From: now - 60, To: now + 60})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want one event, got %d", len(events))
+	}
+	if events[0].PowerLimit != 0 {
+		t.Fatalf("power limit = %v, want zero", events[0].PowerLimit)
+	}
+}
+
+// Migration 011 fills the column from the samples still on disk, so the
+// journal answers the question for the throttles that already happened and
+// not only for the ones to come.
+func TestTheMigrationFillsThePowerLimitFromTheSamples(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Unix()
+
+	if err := db.WriteGPUMetrics([]collector.GPUMetrics{
+		{NodeID: "local", GPUID: 0, Timestamp: now + 10, PowerLimit: 600, ThrottleReasons: 4},
+		{NodeID: "local", GPUID: 0, Timestamp: now + 20, PowerLimit: 600, ThrottleReasons: 4},
+	}); err != nil {
+		t.Fatalf("write samples: %v", err)
+	}
+
+	// An event recorded the way the previous version recorded them, with no
+	// limit of its own.
+	ended := now + 30
+	before := sampleEvent("local", gpuPtr(0), alerts.KindThrottled, now)
+	before.Threshold = 1
+	before.PeakValue = 4
+	id, err := db.OpenAlertEvent(before)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.CloseAlertEvent(id, ended, 4, 4); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := db.conn.Exec(`UPDATE alert_events SET power_limit = NULL WHERE id = ?`, id); err != nil {
+		t.Fatalf("clear the column: %v", err)
+	}
+
+	// Re-running the migration's own statement is what an upgrade does to a
+	// database full of events like that one. It is taken from the migration
+	// rather than copied, so the test cannot drift away from what ships.
+	if _, err := db.conn.Exec(backfillStatement(t, migration011)); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	events, err := db.ListAlertEvents(AlertEventQuery{From: now - 60, To: now + 120})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want one event, got %d", len(events))
+	}
+	if events[0].PowerLimit != 600 {
+		t.Fatalf("power limit = %v, want the 600 W the samples carried", events[0].PowerLimit)
+	}
+}
+
+// backfillStatement pulls the UPDATE out of a migration, so a test can run
+// that one statement against a database where the column already exists.
+func backfillStatement(t *testing.T, migration string) string {
+	t.Helper()
+	for _, stmt := range strings.Split(migration, ";") {
+		if strings.HasPrefix(strings.TrimSpace(stripSQLComments(stmt)), "UPDATE") {
+			return stmt
+		}
+	}
+	t.Fatalf("no UPDATE statement in the migration")
+	return ""
+}
+
+func stripSQLComments(s string) string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }

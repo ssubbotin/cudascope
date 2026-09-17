@@ -43,6 +43,9 @@ var migration009 string
 //go:embed migrations/010_rollup_throttle.sql
 var migration010 string
 
+//go:embed migrations/011_alert_power_limit.sql
+var migration011 string
+
 // Options tunes the queries whose answer depends on how often this
 // deployment collects.
 type Options struct {
@@ -207,6 +210,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 010: %w", err)
 		}
 		log.Println("applied migration 010 (throttle reasons in the rollups)")
+	}
+
+	if version < 11 {
+		if _, err := db.conn.Exec(migration011); err != nil {
+			return fmt.Errorf("migration 011: %w", err)
+		}
+		log.Println("applied migration 011 (power limit on throttle events)")
 	}
 
 	return nil

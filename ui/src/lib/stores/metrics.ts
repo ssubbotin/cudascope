@@ -105,6 +105,8 @@ export interface AlertEvent {
 	ended_at?: number;
 	peak_value: number;
 	last_value: number;
+	/** The card's enforced power limit in watts, on throttle events alone. */
+	power_limit?: number;
 }
 
 // Helper: create a composite key for multi-node GPU identification

@@ -75,7 +75,8 @@ export function alertSummary(
 	kind: string,
 	last: number,
 	peak: number,
-	threshold: number
+	threshold: number,
+	event?: { power_limit?: number }
 ): string {
 	if (kind === 'xid') {
 		return `code ${last}, ${peak} error${peak === 1 ? '' : 's'}`;
@@ -83,7 +84,11 @@ export function alertSummary(
 	if (kind === 'throttled') {
 		const now = throttleReasonNames(last);
 		const seen = throttleReasonNames(peak);
-		const head = now.length > 0 ? `now ${now.join(', ')}` : 'clocks free again';
+		// The limit names what the card was holding itself to, so it belongs
+		// beside the reason rather than on its own.
+		const limit = event?.power_limit ?? 0;
+		const cap = limit > 0 && isPowerThrottle(last) ? ` at ${formatWatts(limit)}` : '';
+		const head = now.length > 0 ? `now ${now.join(', ')}${cap}` : 'clocks free again';
 		return seen.length > now.length ? `${head}; seen ${seen.join(', ')}` : head;
 	}
 	if (kind === 'node_silent' || kind === 'collector_stalled') {
@@ -94,8 +99,21 @@ export function alertSummary(
 
 // A driver fault has no threshold to cross, so printing one reads as a
 // measurement that was never taken.
-export function alertThreshold(kind: string, threshold: number): string {
-	if (kind === 'xid' || kind === 'throttled') return '\u2014';
+// A throttle event is judged by "is any slowdown reason set", so its stored
+// threshold is a 1 and says nothing. A power cap has a real threshold
+// though, the card's own limit, and that is what the column shows when the
+// event was about power and the limit is known.
+export function alertThreshold(
+	kind: string,
+	threshold: number,
+	event?: { peak_value: number; power_limit?: number }
+): string {
+	if (kind === 'throttled') {
+		const limit = event?.power_limit ?? 0;
+		if (limit > 0 && isPowerThrottle(event?.peak_value ?? 0)) return formatWatts(limit);
+		return '\u2014';
+	}
+	if (kind === 'xid') return '\u2014';
 	return alertValue(kind, threshold);
 }
 
@@ -137,4 +155,12 @@ export function throttleReasonNames(mask: number): string[] {
 
 export function isThrottled(mask: number): boolean {
 	return throttleBits.some((r) => r.slowdown && (mask & r.bit) !== 0);
+}
+
+// The power cap and the power brake are the two reasons a wattage explains.
+// A thermal slowdown has a temperature behind it, which the card does not
+// report, so naming the power limit there would answer a question nobody
+// asked.
+export function isPowerThrottle(mask: number): boolean {
+	return (mask & 4) !== 0 || (mask & 128) !== 0;
 }
