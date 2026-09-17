@@ -21,6 +21,21 @@ type Source func() (int64, error)
 // itself once it aged out — in a loop, for a failure a restart cannot fix,
 // such as a driver mismatch after an upgrade.
 func Run(ctx context.Context, src Source, stallAfter time.Duration, onStall func(age time.Duration)) {
+	run(ctx, src, stallAfter, onStall, time.Now, realTicker)
+}
+
+// ticker is how the loop is woken. Production passes realTicker; tests pass
+// a channel they own, so no test has to sleep out an interval.
+type ticker func(time.Duration) (<-chan time.Time, func())
+
+func realTicker(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTicker(d)
+	return t.C, t.Stop
+}
+
+func run(ctx context.Context, src Source, stallAfter time.Duration, onStall func(age time.Duration),
+	now func() time.Time, newTicker ticker) {
+
 	if stallAfter <= 0 {
 		return
 	}
@@ -29,50 +44,73 @@ func Run(ctx context.Context, src Source, stallAfter time.Duration, onStall func
 	if interval < time.Second {
 		interval = time.Second
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	tick, stop := newTicker(interval)
+	defer stop()
 
-	// Anything at or below this was written before we started. -1 means the
-	// reading failed and no baseline has been established yet.
-	baseline, err := src()
-	if err != nil {
-		log.Printf("watchdog: read latest metric: %v", err)
-		baseline = -1
-	}
+	w := newWatcher(stallAfter)
+	ts, err := src()
+	w.observe(ts, err, now())
 
-	collected := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tick:
 		}
 
 		ts, err := src()
-		if err != nil {
-			log.Printf("watchdog: read latest metric: %v", err)
-			continue
+		if age, stalled := w.observe(ts, err, now()); stalled {
+			onStall(age)
+			return
 		}
-
-		if baseline < 0 {
-			baseline = ts
-			continue
-		}
-		if ts <= baseline {
-			// Nothing of ours in the store yet.
-			continue
-		}
-
-		age := time.Since(time.Unix(ts, 0))
-		if age <= stallAfter {
-			collected = true
-			continue
-		}
-		if !collected {
-			continue
-		}
-
-		onStall(age)
-		return
 	}
+}
+
+// watcher is everything the loop remembers between readings. Holding the
+// decision here rather than inside the loop is what lets it be judged
+// without a clock: the tests feed it readings and a time, and no test waits
+// out an interval to find out what it would have done.
+type watcher struct {
+	stallAfter time.Duration
+
+	// Anything at or below this was written before we started. -1 means no
+	// reading has succeeded yet, so there is no baseline.
+	baseline int64
+
+	// collected records that a row of ours has been seen fresh. Until then
+	// an old row is somebody else's, and no age of it means anything.
+	collected bool
+}
+
+func newWatcher(stallAfter time.Duration) *watcher {
+	return &watcher{stallAfter: stallAfter, baseline: -1}
+}
+
+// observe folds one reading in. It returns the age of the newest row once
+// collection has stopped, and false at every other moment, including every
+// moment before this process has collected anything of its own.
+func (w *watcher) observe(ts int64, err error, now time.Time) (time.Duration, bool) {
+	if err != nil {
+		log.Printf("watchdog: read latest metric: %v", err)
+		return 0, false
+	}
+
+	if w.baseline < 0 {
+		w.baseline = ts
+		return 0, false
+	}
+	if ts <= w.baseline {
+		// Nothing of ours in the store yet.
+		return 0, false
+	}
+
+	age := now.Sub(time.Unix(ts, 0))
+	if age <= w.stallAfter {
+		w.collected = true
+		return 0, false
+	}
+	if !w.collected {
+		return 0, false
+	}
+	return age, true
 }

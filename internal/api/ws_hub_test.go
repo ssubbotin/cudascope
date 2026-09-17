@@ -81,6 +81,9 @@ func TestBroadcastDoesNotBlockOnStalledClient(t *testing.T) {
 // in the client map forever and every later broadcast pays for it.
 func TestStalledClientIsEvicted(t *testing.T) {
 	hub := NewHub()
+	// The eviction is what is under test, not how long the deadline is. At
+	// the production five seconds this test sat out every one of them.
+	hub.writeWait = 100 * time.Millisecond
 	srv := httptest.NewServer(http.HandlerFunc(hub.HandleWS))
 	defer srv.Close()
 
@@ -103,7 +106,7 @@ func TestStalledClientIsEvicted(t *testing.T) {
 		}
 	}()
 
-	waitForClients(t, hub, 0, 30*time.Second)
+	waitForClients(t, hub, 0, 5*time.Second)
 }
 
 // The collector now runs one goroutine per metric source, so Broadcast is

@@ -90,7 +90,11 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go c.Run(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Run(ctx)
+	}()
 
 	if !waitForCount(&host.n, 2, 2*time.Second) {
 		t.Fatal("host loop never ran")
@@ -98,7 +102,9 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	cancel()
 
 	settled := host.n.Load()
-	time.Sleep(200 * time.Millisecond)
+	// Run returning is the proof that every loop has stopped. Sleeping and
+	// looking again only says they had not ticked yet.
+	<-done
 	if got := host.n.Load(); got > settled+1 {
 		t.Fatalf("host loop kept running after cancel: %d -> %d", settled, got)
 	}
@@ -167,8 +173,9 @@ func TestEverySampleReachesTheAlertEngine(t *testing.T) {
 // must not be told the GPUs are fine when they answered nothing at all.
 func TestASilentTickReachesNobody(t *testing.T) {
 	engine := &recordingAlerts{}
+	gpu := &silentGPU{}
 	c := &Collector{
-		gpu:          silentGPU{},
+		gpu:          gpu,
 		host:         &countingHost{},
 		storage:      nopSink{},
 		alerts:       engine,
@@ -180,16 +187,25 @@ func TestASilentTickReachesNobody(t *testing.T) {
 	defer cancel()
 	go c.Run(ctx)
 
-	time.Sleep(100 * time.Millisecond)
+	if !waitForCount(&gpu.ticks, 5, 2*time.Second) {
+		t.Fatal("the GPU loop never ran")
+	}
 	if got := engine.count(); got != 0 {
 		t.Fatalf("a silent GPU produced %d evaluations", got)
 	}
 }
 
-type silentGPU struct{}
+// silentGPU answers every tick with nothing, and counts the ticks so a test
+// can wait for them instead of for a duration they probably fit in.
+type silentGPU struct {
+	ticks atomic.Int64
+}
 
-func (silentGPU) Collect() []GPUMetrics          { return nil }
-func (silentGPU) CollectProcesses() []GPUProcess { return nil }
+func (g *silentGPU) Collect() []GPUMetrics {
+	g.ticks.Add(1)
+	return nil
+}
+func (*silentGPU) CollectProcesses() []GPUProcess { return nil }
 
 // countingGPU counts metric ticks and process enumerations separately.
 type countingGPU struct {
@@ -277,7 +293,9 @@ func TestAnUnsetIntervalFallsBackInsteadOfPanicking(t *testing.T) {
 		c.Run(ctx)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// A zero interval panics inside time.NewTicker, which happens while the
+	// loops are built and so before Run can return. Waiting first would not
+	// make that any more certain.
 	cancel()
 
 	select {
