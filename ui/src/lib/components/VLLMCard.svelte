@@ -91,22 +91,10 @@
 				</div>
 			</div>
 
-			<!-- Prefix cache -->
-			{#if metrics.prefix_cache_hit_rate > 0}
-				<div>
-					<div class="flex justify-between text-xs mb-1">
-						<span class="text-text-muted">Prefix Cache Hit</span>
-						<span class="font-mono text-text-secondary">{(metrics.prefix_cache_hit_rate * 100).toFixed(1)}%</span>
-					</div>
-					<ProgressBar value={metrics.prefix_cache_hit_rate * 100} color="var(--color-accent)" />
-				</div>
-			{/if}
-
 			<!-- Plot. Pinned to the bottom of the card with mt-auto, so the
 			     divider above it lines up with the other cards' however much
-			     content sits above: a card gains rows as a badge appears or a
-			     rate turns up, and the plot should not move with them. No upper
-			     bound, tokens per second are not a percentage. -->
+			     content sits above. No upper bound, tokens per second are not
+			     a percentage. -->
 			<div class="mt-auto pt-2 border-t border-border">
 				<div class="text-xs text-text-muted mb-1">Throughput</div>
 				<Sparkline data={throughputData} color="var(--color-accent)" />
