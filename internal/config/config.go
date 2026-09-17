@@ -40,6 +40,8 @@ type Config struct {
 	RetentionAlerts       time.Duration // how long closed alert events are kept
 	VLLMUrl               string        // vLLM metrics endpoint base URL (empty = disabled)
 	VLLMInterval          time.Duration
+	OllamaURL             string // ollama base URL (empty = disabled)
+	OllamaInterval        time.Duration
 	AlertThrottle         bool   // record the stretches a card held its own clocks back
 	MaxPoints             int    // most points one history answer carries (0 = no cap)
 	IngestToken           string // shared secret agents present to a hub (empty = disabled)
@@ -77,6 +79,7 @@ func (c *Config) Validate() error {
 		{"host-interval", c.HostInterval},
 		{"process-interval", c.ProcessInterval},
 		{"vllm-interval", c.VLLMInterval},
+		{"ollama-interval", c.OllamaInterval},
 	} {
 		if iv.value < minSampleInterval {
 			return fmt.Errorf("--%s is %s: the finest resolution storage keeps is %s",
@@ -115,6 +118,8 @@ func Load() *Config {
 	flag.DurationVar(&cfg.RetentionAlerts, "retention-alerts", envOrDefaultDuration("CUDASCOPE_RETENTION_ALERTS", 90*24*time.Hour), "closed alert event retention")
 	flag.StringVar(&cfg.VLLMUrl, "vllm-url", envOrDefault("CUDASCOPE_VLLM_URL", ""), "vLLM metrics endpoint base URL (empty=disabled)")
 	flag.DurationVar(&cfg.VLLMInterval, "vllm-interval", envOrDefaultDuration("CUDASCOPE_VLLM_INTERVAL", 5*time.Second), "vLLM metrics collection interval")
+	flag.StringVar(&cfg.OllamaURL, "ollama-url", envOrDefault("CUDASCOPE_OLLAMA_URL", ""), "ollama base URL (empty=disabled)")
+	flag.DurationVar(&cfg.OllamaInterval, "ollama-interval", envOrDefaultDuration("CUDASCOPE_OLLAMA_INTERVAL", 10*time.Second), "ollama collection interval")
 	flag.BoolVar(&cfg.AlertThrottle, "alert-throttle", envOrDefaultBool("CUDASCOPE_ALERT_THROTTLE", true), "record an alert while a card holds its own clocks back")
 	flag.IntVar(&cfg.MaxPoints, "max-points", envOrDefaultInt("CUDASCOPE_MAX_POINTS", 2000), "most points one history response carries (0=no cap)")
 	flag.StringVar(&cfg.IngestToken, "ingest-token", envOrDefault("CUDASCOPE_INGEST_TOKEN", ""), "shared secret agents must present to a hub (empty=ingest is open)")

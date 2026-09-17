@@ -135,6 +135,51 @@ func (db *DB) WriteVLLMMetrics(m *collector.VLLMMetrics) error {
 	return err
 }
 
+// WriteOllamaMetrics stores one ollama reading: a row per loaded model, and
+// a row for the tick itself so that a server holding nothing is still a
+// reading rather than a gap.
+func (db *DB) WriteOllamaMetrics(m *collector.OllamaMetrics) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	nodeID := m.NodeID
+	if nodeID == "" {
+		nodeID = "local"
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO ollama_ticks (ts, node_id, loaded, version)
+		VALUES (?, ?, ?, ?)`, m.Timestamp, nodeID, len(m.Models), m.Version); err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO ollama_models_raw
+		(ts, node_id, model, size_bytes, vram_bytes, context_length, expires_at, version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, model := range m.Models {
+		var expires any
+		if model.ExpiresAt > 0 {
+			expires = model.ExpiresAt
+		}
+		if _, err := stmt.Exec(m.Timestamp, nodeID, model.Name, model.SizeBytes,
+			model.VRAMBytes, model.ContextLength, expires, m.Version); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 // RegisterGPUDevices upserts GPU device info for a given node.
 func (db *DB) RegisterGPUDevices(nodeID string, devices []collector.GPUDevice) error {
 	db.mu.Lock()

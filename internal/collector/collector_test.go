@@ -31,10 +31,11 @@ func (v *countingVLLM) Collect() (*VLLMMetrics, error) {
 
 type nopSink struct{}
 
-func (nopSink) WriteGPUMetrics([]GPUMetrics) error   { return nil }
-func (nopSink) WriteHostMetrics(*HostMetrics) error  { return nil }
-func (nopSink) WriteGPUProcesses([]GPUProcess) error { return nil }
-func (nopSink) WriteVLLMMetrics(*VLLMMetrics) error  { return nil }
+func (nopSink) WriteGPUMetrics([]GPUMetrics) error      { return nil }
+func (nopSink) WriteHostMetrics(*HostMetrics) error     { return nil }
+func (nopSink) WriteGPUProcesses([]GPUProcess) error    { return nil }
+func (nopSink) WriteVLLMMetrics(*VLLMMetrics) error     { return nil }
+func (nopSink) WriteOllamaMetrics(*OllamaMetrics) error { return nil }
 
 func waitForCount(n *atomic.Int64, want int64, within time.Duration) bool {
 	deadline := time.Now().Add(within)

@@ -4,11 +4,12 @@
 	import GPUCard from '$lib/components/GPUCard.svelte';
 	import HostCard from '$lib/components/HostCard.svelte';
 	import VLLMCard from '$lib/components/VLLMCard.svelte';
+	import OllamaCard from '$lib/components/OllamaCard.svelte';
 	import ProcessList from '$lib/components/ProcessList.svelte';
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import NodeSelector from '$lib/components/NodeSelector.svelte';
-	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory, parseRangeSeconds, latestVLLM, vllmHistory, hostHistory, isLiveRange, appendPoint } from '$lib/stores/metrics';
+	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory, parseRangeSeconds, latestVLLM, vllmHistory, latestOllama, ollamaHistory, hostHistory, isLiveRange, appendPoint } from '$lib/stores/metrics';
 	import type { GPUMetrics, HostMetrics } from '$lib/stores/metrics';
 
 	const GPU_COLORS = ['#38bdf8', '#4ade80', '#fbbf24', '#f87171', '#a78bfa', '#fb923c', '#2dd4bf', '#e879f9'];
@@ -237,6 +238,9 @@
 			{/each}
 			{#if $latestVLLM}
 				<VLLMCard metrics={$latestVLLM} history={$vllmHistory} />
+			{/if}
+			{#if $latestOllama}
+				<OllamaCard metrics={$latestOllama} history={$ollamaHistory} />
 			{/if}
 		</div>
 	</section>

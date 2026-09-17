@@ -13,6 +13,7 @@ type MetricSink interface {
 	WriteHostMetrics(m *HostMetrics) error
 	WriteGPUProcesses(procs []GPUProcess) error
 	WriteVLLMMetrics(m *VLLMMetrics) error
+	WriteOllamaMetrics(m *OllamaMetrics) error
 }
 
 // BroadcastSink receives snapshots for real-time push.
@@ -42,6 +43,10 @@ type vllmSource interface {
 	Collect() (*VLLMMetrics, error)
 }
 
+type ollamaSource interface {
+	Collect() (*OllamaMetrics, error)
+}
+
 // defaultProcInterval is how often the process list is enumerated when
 // nothing else is configured. It is deliberately slower than the metric
 // tick: the list changes when a job starts or ends, while enumerating it
@@ -54,6 +59,10 @@ const (
 	defaultGPUInterval  = time.Second
 	defaultHostInterval = 5 * time.Second
 	defaultVLLMInterval = 5 * time.Second
+	// Ollama publishes state rather than counters, and the state changes
+	// when a model is loaded or unloaded. Ten seconds is dense enough to
+	// catch that and idle enough to cost nothing.
+	defaultOllamaInterval = 10 * time.Second
 )
 
 // Collector orchestrates GPU and host metric collection.
@@ -61,14 +70,16 @@ type Collector struct {
 	gpu       gpuSource
 	host      hostSource
 	vllm      vllmSource
+	ollama    ollamaSource
 	storage   MetricSink
 	broadcast BroadcastSink
 	alerts    AlertObserver
 
-	gpuInterval  time.Duration
-	hostInterval time.Duration
-	procInterval time.Duration
-	vllmInterval time.Duration
+	gpuInterval    time.Duration
+	hostInterval   time.Duration
+	procInterval   time.Duration
+	vllmInterval   time.Duration
+	ollamaInterval time.Duration
 
 	// gpuSilent tracks whether the GPUs have stopped answering, so the
 	// transition is logged once instead of every tick.
@@ -111,6 +122,15 @@ func (c *Collector) SetVLLM(vllm vllmSource, interval time.Duration) {
 	c.vllmInterval = interval
 }
 
+// SetOllama configures ollama metrics collection.
+func (c *Collector) SetOllama(ollama ollamaSource, interval time.Duration) {
+	if ollama == nil {
+		return
+	}
+	c.ollama = ollama
+	c.ollamaInterval = interval
+}
+
 // Run starts one collection loop per metric source. Blocks until ctx is
 // cancelled.
 //
@@ -136,6 +156,10 @@ func (c *Collector) Run(ctx context.Context) {
 
 	if c.vllm != nil {
 		start(atLeast(c.vllmInterval, defaultVLLMInterval), c.collectVLLM)
+	}
+
+	if c.ollama != nil {
+		start(atLeast(c.ollamaInterval, defaultOllamaInterval), c.collectOllama)
 	}
 
 	wg.Wait()
@@ -237,6 +261,26 @@ func (c *Collector) collectHost() {
 			Type:      "host_metrics",
 			Timestamp: time.Now().Unix(),
 			Host:      m,
+		})
+	}
+}
+
+func (c *Collector) collectOllama() {
+	m, err := c.ollama.Collect()
+	if err != nil {
+		log.Printf("error collecting ollama metrics: %v", err)
+		return
+	}
+
+	if err := c.storage.WriteOllamaMetrics(m); err != nil {
+		log.Printf("error writing ollama metrics: %v", err)
+	}
+
+	if c.broadcast != nil {
+		c.broadcast.Broadcast(Snapshot{
+			Type:      "ollama_metrics",
+			Timestamp: time.Now().Unix(),
+			Ollama:    m,
 		})
 	}
 }

@@ -63,6 +63,8 @@ func (db *DB) doRetention(cfg RetentionConfig) {
 	db.prune("vllm_metrics_raw", rawCutoff)
 	db.prune("vllm_metrics_1m", m1Cutoff)
 	db.prune("vllm_metrics_1h", h1Cutoff)
+	db.prune("ollama_models_raw", rawCutoff)
+	db.prune("ollama_ticks", rawCutoff)
 
 	if cfg.Alerts > 0 {
 		db.pruneAlertEvents(now - int64(cfg.Alerts.Seconds()))
