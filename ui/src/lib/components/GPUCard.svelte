@@ -97,13 +97,13 @@
 					</div>
 				</div>
 
-				<!-- Sparkline -->
-				{#if utilHistory.length > 1}
-					<div class="pt-2 border-t border-border">
-						<div class="text-xs text-text-muted mb-1">Utilization</div>
-						<Sparkline data={utilHistory} color={utilColor(metrics.gpu_util)} />
-					</div>
-				{/if}
+				<!-- Sparkline. Always rendered: hiding it while the buffer fills
+				     made the card change height a second after it appeared, and
+				     left it shorter than its neighbours until then. -->
+				<div class="pt-2 border-t border-border">
+					<div class="text-xs text-text-muted mb-1">Utilization</div>
+					<Sparkline data={utilHistory} color={utilColor(metrics.gpu_util)} />
+				</div>
 			</div>
 		{:else}
 			<div class="text-sm text-text-muted py-4 text-center">Waiting for data...</div>
