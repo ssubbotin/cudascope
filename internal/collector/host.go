@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"log"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -17,6 +18,9 @@ type HostCollector struct {
 	prevNetTx uint64
 	prevNetTs time.Time
 	firstRead bool
+
+	// netReset keeps a counter reset from being logged on every tick.
+	netReset bool
 }
 
 // NewHostCollector creates a new host metric collector.
@@ -25,6 +29,18 @@ func NewHostCollector(nodeID string) *HostCollector {
 		nodeID:    nodeID,
 		firstRead: true,
 	}
+}
+
+// netRate turns two counter readings into bytes per second. It reports
+// false when the counter went backwards, which happens on an interface
+// reset, a namespace change or a driver reload: the difference is unsigned,
+// so it wraps to something near 1.8e19 and the stored rate becomes a number
+// nothing ever transferred.
+func netRate(current, previous uint64, elapsed float64) (uint64, bool) {
+	if elapsed <= 0 || current < previous {
+		return 0, false
+	}
+	return uint64(float64(current-previous) / elapsed), true
 }
 
 // Collect reads a single host metrics snapshot.
@@ -72,9 +88,17 @@ func (hc *HostCollector) Collect() (*HostMetrics, error) {
 
 		if !hc.firstRead {
 			elapsed := now.Sub(hc.prevNetTs).Seconds()
-			if elapsed > 0 {
-				m.NetRx = uint64(float64(totalRx-hc.prevNetRx) / elapsed)
-				m.NetTx = uint64(float64(totalTx-hc.prevNetTx) / elapsed)
+			rx, rxOK := netRate(totalRx, hc.prevNetRx, elapsed)
+			tx, txOK := netRate(totalTx, hc.prevNetTx, elapsed)
+			if rxOK && txOK {
+				m.NetRx = rx
+				m.NetTx = tx
+			} else if !hc.netReset {
+				hc.netReset = true
+				log.Printf("host network counters went backwards, skipping the rate for this tick")
+			}
+			if rxOK && txOK {
+				hc.netReset = false
 			}
 		}
 
