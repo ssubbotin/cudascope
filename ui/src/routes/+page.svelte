@@ -8,7 +8,7 @@
 	import TimeSeriesChart from '$lib/components/TimeSeriesChart.svelte';
 	import TimeRangePicker from '$lib/components/TimeRangePicker.svelte';
 	import NodeSelector from '$lib/components/NodeSelector.svelte';
-	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory, parseRangeSeconds, latestVLLM, vllmHistory, isLiveRange, appendPoint } from '$lib/stores/metrics';
+	import { devices, latestGPU, latestHosts, processes, gpuHistory, nodes, selectedNode, gpuKey, fetchGPUHistory, fetchHostHistory, parseRangeSeconds, latestVLLM, vllmHistory, hostHistory, isLiveRange, appendPoint } from '$lib/stores/metrics';
 	import type { GPUMetrics, HostMetrics } from '$lib/stores/metrics';
 
 	const GPU_COLORS = ['#38bdf8', '#4ade80', '#fbbf24', '#f87171', '#a78bfa', '#fb923c', '#2dd4bf', '#e879f9'];
@@ -230,7 +230,10 @@
 				/>
 			{/each}
 			{#each filteredHosts as host (host.node_id)}
-				<HostCard metrics={host} />
+				<HostCard
+					metrics={host}
+					history={$hostHistory.filter((h) => h.node_id === host.node_id)}
+				/>
 			{/each}
 			{#if $latestVLLM}
 				<VLLMCard metrics={$latestVLLM} history={$vllmHistory} />

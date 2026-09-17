@@ -1,16 +1,24 @@
 <script lang="ts">
 	import type { HostMetrics } from '$lib/stores/metrics';
 	import ProgressBar from './ProgressBar.svelte';
+	import Sparkline from './Sparkline.svelte';
 	import { formatBytes, formatNetRate, utilColor } from '$lib/utils/format';
 
 	interface Props {
 		metrics: HostMetrics | null;
+		history?: HostMetrics[];
 	}
 
-	let { metrics }: Props = $props();
+	let { metrics, history = [] }: Props = $props();
+
+	let cpuHistory = $derived(history.map((m) => m.cpu_percent));
+	let detailHref = $derived(metrics ? `/host?node=${metrics.node_id}` : '/host');
 </script>
 
-<div class="bg-bg-card border border-border rounded-xl p-5">
+<a
+	href={detailHref}
+	class="block h-full bg-bg-card border border-border rounded-xl p-5 hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 cursor-pointer"
+>
 	<div class="flex items-center gap-2 mb-4">
 		<svg class="w-4 h-4 text-text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 			<rect x="2" y="2" width="20" height="8" rx="2"/>
@@ -64,8 +72,15 @@
 					<div class="text-sm font-mono text-text-secondary">{formatNetRate(metrics.net_tx)}</div>
 				</div>
 			</div>
+
+			<!-- Plot, in the same place and of the same height as on the other
+			     cards, over the same stretch of time. -->
+			<div class="pt-2 border-t border-border">
+				<div class="text-xs text-text-muted mb-1">CPU</div>
+				<Sparkline data={cpuHistory} min={0} max={100} color={utilColor(metrics.cpu_percent)} />
+			</div>
 		</div>
 	{:else}
 		<div class="text-sm text-text-muted py-4 text-center">Waiting for data...</div>
 	{/if}
-</div>
+</a>

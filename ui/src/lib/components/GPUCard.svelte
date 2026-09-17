@@ -26,8 +26,16 @@
 	let throttleReasons = $derived(metrics ? throttleReasonNames(metrics.throttle_reasons) : []);
 </script>
 
-<a href={detailHref} class="block">
-	<div class="bg-bg-card border rounded-xl p-5 hover:bg-bg-card-hover transition-all duration-200 cursor-pointer {hasAlert ? 'border-red/60' : 'border-border hover:border-accent/40'}">
+<!-- The link is the card, as on the host and vLLM cards. With the card in a
+     wrapper instead, this one alone did not stretch to the height of its row
+     and sat lower than its neighbours. -->
+<a
+	href={detailHref}
+	class="block h-full bg-bg-card border rounded-xl p-5 hover:bg-bg-card-hover transition-all duration-200 cursor-pointer {hasAlert
+		? 'border-red/60'
+		: 'border-border hover:border-accent/40'}"
+>
+	<div>
 		<div class="flex items-center justify-between mb-4">
 			<div>
 				<h3 class="text-sm font-medium text-text-primary">
@@ -102,7 +110,7 @@
 				     left it shorter than its neighbours until then. -->
 				<div class="pt-2 border-t border-border">
 					<div class="text-xs text-text-muted mb-1">Utilization</div>
-					<Sparkline data={utilHistory} color={utilColor(metrics.gpu_util)} />
+					<Sparkline data={utilHistory} min={0} max={100} color={utilColor(metrics.gpu_util)} />
 				</div>
 			</div>
 		{:else}

@@ -27,7 +27,7 @@
 	let throughputData = $derived(history.map(m => m.token_throughput));
 </script>
 
-<a href="/vllm" class="block bg-bg-card border border-border rounded-xl p-5 hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 cursor-pointer">
+<a href="/vllm" class="block h-full bg-bg-card border border-border rounded-xl p-5 hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 cursor-pointer">
 	<div class="flex items-center gap-2 mb-4">
 		<svg class="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 			<path d="M12 2L2 7l10 5 10-5-10-5z"/>
@@ -50,9 +50,6 @@
 						{formatTps(metrics.token_throughput)} tok/s
 					</span>
 				</div>
-				<!-- Always rendered, so the card keeps its height while the
-				     buffer fills. -->
-				<Sparkline data={throughputData} height={28} color="var(--color-accent)" />
 			</div>
 
 			<!-- Active requests -->
@@ -90,6 +87,14 @@
 					<div class="text-xs text-text-muted mb-1">per token</div>
 					<div class="font-mono text-sm text-text-secondary">{formatMs(metrics.tpot_avg)}</div>
 				</div>
+			</div>
+
+			<!-- Plot. Last in the card, under a divider, the same shape and
+			     height as on the other cards, and covering the same stretch of
+			     time. No upper bound: tokens per second are not a percentage. -->
+			<div class="pt-2 border-t border-border">
+				<div class="text-xs text-text-muted mb-1">Throughput</div>
+				<Sparkline data={throughputData} color="var(--color-accent)" />
 			</div>
 
 			<!-- Prefix cache -->
