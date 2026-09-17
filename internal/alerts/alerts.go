@@ -59,6 +59,12 @@ type Event struct {
 	EndedAt   *int64  `json:"ended_at,omitempty"` // nil while open
 	PeakValue float64 `json:"peak_value"`
 	LastValue float64 `json:"last_value"`
+
+	// PowerLimit is the card's enforced power limit while the event was
+	// open, in watts, and is set for KindThrottled alone. A power cap
+	// throttle has a real threshold, the card's own limit, and the journal
+	// had nothing to put in its threshold column but a dash.
+	PowerLimit float64 `json:"power_limit,omitempty"`
 }
 
 // NodeHeartbeat is what the engine needs to judge a node's silence.
@@ -128,6 +134,13 @@ type Engine struct {
 	mu       sync.Mutex
 	cands    map[key]*candidate
 	onChange func()
+
+	// limits holds the enforced power limit last seen per throttle key, so
+	// an event opening several samples after the first breach still records
+	// the limit that was in force. Kept beside the candidates rather than
+	// on them: a candidate is born inside evaluate, after the sample that
+	// carried the limit has been handed over.
+	limits map[key]float64
 }
 
 // New creates an engine. now is injected so tests need no sleeping.
@@ -136,10 +149,11 @@ func New(cfg Config, store Store, now func() time.Time) *Engine {
 		now = time.Now
 	}
 	return &Engine{
-		cfg:   cfg,
-		store: store,
-		now:   now,
-		cands: make(map[key]*candidate),
+		cfg:    cfg,
+		store:  store,
+		now:    now,
+		cands:  make(map[key]*candidate),
+		limits: make(map[key]float64),
 	}
 }
 
@@ -250,6 +264,9 @@ func (e *Engine) Observe(metrics []collector.GPUMetrics) {
 				reasons = float64(m.ThrottleReasons)
 			}
 			k := key{node: node, gpu: m.GPUID, kind: KindThrottled}
+			if m.PowerLimit > 0 {
+				e.limits[k] = m.PowerLimit
+			}
 			changed = e.evaluate(k, reasons, 1, now, e.cfg.For, e.cfg.Clear) || changed
 		}
 	}
@@ -451,6 +468,9 @@ func (e *Engine) evaluate(k key, value, threshold float64, now time.Time, forDwe
 			PeakValue: value,
 			LastValue: value,
 		}
+		if k.kind == KindThrottled {
+			c.ev.PowerLimit = e.limits[k]
+		}
 		if k.gpu != nodeLevel {
 			gpu := k.gpu
 			c.ev.GPUID = &gpu
@@ -470,6 +490,7 @@ func (e *Engine) evaluate(k key, value, threshold float64, now time.Time, forDwe
 	c.breachSince = time.Time{}
 	if !c.open {
 		delete(e.cands, k)
+		delete(e.limits, k)
 		return false
 	}
 
@@ -489,6 +510,7 @@ func (e *Engine) evaluate(k key, value, threshold float64, now time.Time, forDwe
 	}
 	log.Printf("alerts: %s on %s cleared after %s", k.kind, k.node, time.Duration(end-c.ev.StartedAt)*time.Second)
 	delete(e.cands, k)
+	delete(e.limits, k)
 	return true
 }
 

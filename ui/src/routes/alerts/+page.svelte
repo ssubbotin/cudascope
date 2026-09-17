@@ -107,7 +107,7 @@
 						<span class="text-sm font-medium text-red">{alertName(event.kind)}</span>
 						<span class="text-sm text-text-primary">{target(event)}</span>
 						<span class="text-xs text-text-muted">
-							{alertSummary(event.kind, event.last_value, event.peak_value, event.threshold)}
+							{alertSummary(event.kind, event.last_value, event.peak_value, event.threshold, event)}
 						</span>
 						<span class="text-xs text-text-muted ml-auto">
 							{formatClock(event.started_at)} · {duration(event)}
@@ -149,7 +149,7 @@
 									>{alertPeak(event.kind, event.peak_value)}</td
 								>
 								<td class="px-4 py-2 text-right text-text-muted"
-									>{alertThreshold(event.kind, event.threshold)}</td
+									>{alertThreshold(event.kind, event.threshold, event)}</td
 								>
 								<td class="px-4 py-2 text-right text-text-muted">{formatClock(event.started_at)}</td>
 								<td class="px-4 py-2 text-right text-text-secondary">{duration(event)}</td>

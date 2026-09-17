@@ -114,6 +114,14 @@ func (s *fakeStore) openCount() int {
 	return len(s.opened)
 }
 
+// openedEvents returns copies of the rows the engine wrote, so a test can
+// look at what was recorded rather than only how many rows there were.
+func (s *fakeStore) openedEvents() []Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Event(nil), s.opened...)
+}
+
 func (s *fakeStore) closedCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -619,7 +627,16 @@ func TestAnXidFromAnUnidentifiedCardIsANodeEvent(t *testing.T) {
 // throttleSample is a reading whose clocks are being held back for the
 // given NVML reasons.
 func throttleSample(mask uint64) []collector.GPUMetrics {
-	return []collector.GPUMetrics{{NodeID: "local", GPUID: 0, Temperature: 60, ThrottleReasons: mask}}
+	return throttleSampleAt(mask, 0)
+}
+
+// throttleSampleAt is the same sample carrying the card's enforced power
+// limit, which is what a power cap throttle is judged against.
+func throttleSampleAt(mask uint64, limit float64) []collector.GPUMetrics {
+	return []collector.GPUMetrics{{
+		NodeID: "local", GPUID: 0, Temperature: 60,
+		ThrottleReasons: mask, PowerLimit: limit,
+	}}
 }
 
 const (
@@ -667,6 +684,76 @@ func TestThrottlingOpensAnEventAfterTheDwell(t *testing.T) {
 	e.Observe(throttleSample(0))
 	if got := len(e.Active()); got != 0 {
 		t.Fatalf("event stayed open after the card was free again: %d", got)
+	}
+}
+
+// A power cap throttle is judged against the card's own limit, and the
+// journal used to have nothing to put in its threshold column. The limit is
+// read from the samples, including the ones before the dwell elapsed, so an
+// event opening a minute in still records what was in force.
+func TestAThrottleEventRecordsThePowerLimitInForce(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(throttleConfig(), store, c.now)
+
+	e.Observe(throttleSampleAt(maskPowerCap, 600))
+	c.advance(30 * time.Second)
+	e.Observe(throttleSampleAt(maskPowerCap, 600))
+
+	opened := store.openedEvents()
+	if len(opened) != 1 {
+		t.Fatalf("want one recorded event, got %d", len(opened))
+	}
+	if opened[0].PowerLimit != 600 {
+		t.Fatalf("want the 600 W limit recorded, got %v", opened[0].PowerLimit)
+	}
+	if active := e.Active(); len(active) != 1 || active[0].PowerLimit != 600 {
+		t.Fatalf("want the limit on the open event too, got %+v", active)
+	}
+}
+
+// A card that answers nothing to the power limit call leaves the column
+// empty rather than claiming a limit of zero watts.
+func TestAThrottleEventWithoutAPowerLimitRecordsNone(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(throttleConfig(), store, c.now)
+
+	e.Observe(throttleSampleAt(maskSwThermal, 0))
+	c.advance(30 * time.Second)
+	e.Observe(throttleSampleAt(maskSwThermal, 0))
+
+	opened := store.openedEvents()
+	if len(opened) != 1 {
+		t.Fatalf("want one recorded event, got %d", len(opened))
+	}
+	if opened[0].PowerLimit != 0 {
+		t.Fatalf("want no limit recorded, got %v", opened[0].PowerLimit)
+	}
+}
+
+// The limit belongs to the event it was seen during. A second event on the
+// same card after the limit was lowered records the new one.
+func TestTheNextEventRecordsTheNewLimit(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(throttleConfig(), store, c.now)
+
+	e.Observe(throttleSampleAt(maskPowerCap, 600))
+	c.advance(30 * time.Second)
+	e.Observe(throttleSampleAt(maskPowerCap, 600))
+
+	e.Observe(throttleSampleAt(0, 600))
+	c.advance(61 * time.Second)
+	e.Observe(throttleSampleAt(0, 600))
+
+	e.Observe(throttleSampleAt(maskPowerCap, 450))
+	c.advance(30 * time.Second)
+	e.Observe(throttleSampleAt(maskPowerCap, 450))
+
+	opened := store.openedEvents()
+	if len(opened) != 2 {
+		t.Fatalf("want two recorded events, got %d", len(opened))
+	}
+	if opened[0].PowerLimit != 600 || opened[1].PowerLimit != 450 {
+		t.Fatalf("want 600 then 450, got %v and %v", opened[0].PowerLimit, opened[1].PowerLimit)
 	}
 }
 
