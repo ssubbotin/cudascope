@@ -105,3 +105,114 @@ func TestVLLMShortRangeReadsRawSamples(t *testing.T) {
 		t.Fatalf("want the four raw samples, got %d", len(history))
 	}
 }
+
+// ratio is a pointer literal, which a test needs on every line that carries
+// a measured value.
+func ratio(v float64) *float64 { return &v }
+
+// A window that measured nothing is stored as nothing and reads back as
+// nothing, so the chart draws no point there instead of a point at zero.
+func TestAnAbsentRatioSurvivesTheRoundTrip(t *testing.T) {
+	db := openTestDBWith(t, Options{})
+	now := time.Now().Unix()
+
+	err := db.WriteVLLMMetrics(&collector.VLLMMetrics{
+		NodeID: "local", Timestamp: now, ModelName: "qwen3-coder",
+		TokenThroughput: 120, PrefixCacheHitRate: nil, TimeToFirstTokenAvg: nil,
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	err = db.WriteVLLMMetrics(&collector.VLLMMetrics{
+		NodeID: "local", Timestamp: now + 1, ModelName: "qwen3-coder",
+		TokenThroughput: 120, PrefixCacheHitRate: ratio(0.9), TimeToFirstTokenAvg: ratio(2),
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	history, err := db.ReadVLLMMetrics("local", now-60, now+60)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("want two rows, got %d", len(history))
+	}
+	if history[0].PrefixCacheHitRate != nil || history[0].TimeToFirstTokenAvg != nil {
+		t.Fatalf("want the empty window to stay empty, got %+v", history[0])
+	}
+	if history[1].PrefixCacheHitRate == nil || *history[1].PrefixCacheHitRate != 0.9 {
+		t.Fatalf("hit rate = %v, want 0.9", history[1].PrefixCacheHitRate)
+	}
+}
+
+// The rollup average is over the windows that measured something. Counting
+// the empty ones as zeros is what dragged a day of history down.
+func TestTheRollupAveragesOnlyTheWindowsThatMeasured(t *testing.T) {
+	db := openTestDBWith(t, Options{})
+	now := time.Now().Unix()
+	minute := (now - 600) / 60 * 60
+
+	// One prefill measured 0.8, and nine scrapes of generation measured
+	// nothing. The average of that minute is 0.8.
+	for i := int64(0); i < 10; i++ {
+		var rate *float64
+		if i == 0 {
+			rate = ratio(0.8)
+		}
+		err := db.WriteVLLMMetrics(&collector.VLLMMetrics{
+			NodeID: "local", Timestamp: minute + i, ModelName: "qwen3-coder",
+			TokenThroughput: 120, PrefixCacheHitRate: rate,
+		})
+		if err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	db.doRetention(RetentionConfig{Raw: time.Minute, M1: 30 * 24 * time.Hour, H1: 365 * 24 * time.Hour})
+
+	history, err := db.ReadVLLMMetrics("local", now-24*3600, now)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("want one rolled up point, got %d", len(history))
+	}
+	if history[0].PrefixCacheHitRate == nil {
+		t.Fatal("the one measurement of the minute was lost")
+	}
+	if *history[0].PrefixCacheHitRate != 0.8 {
+		t.Fatalf("rolled up hit rate = %v, want the 0.8 that was measured", *history[0].PrefixCacheHitRate)
+	}
+}
+
+// A minute in which nothing was measured has no rate at all, rather than a
+// rate of zero.
+func TestAMinuteThatMeasuredNothingRollsUpToNothing(t *testing.T) {
+	db := openTestDBWith(t, Options{})
+	now := time.Now().Unix()
+	minute := (now - 600) / 60 * 60
+
+	for i := int64(0); i < 5; i++ {
+		err := db.WriteVLLMMetrics(&collector.VLLMMetrics{
+			NodeID: "local", Timestamp: minute + i, ModelName: "qwen3-coder",
+			TokenThroughput: 120, PrefixCacheHitRate: nil,
+		})
+		if err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	db.doRetention(RetentionConfig{Raw: time.Minute, M1: 30 * 24 * time.Hour, H1: 365 * 24 * time.Hour})
+
+	history, err := db.ReadVLLMMetrics("local", now-24*3600, now)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("want one rolled up point, got %d", len(history))
+	}
+	if history[0].PrefixCacheHitRate != nil {
+		t.Fatalf("want no rate, got %v", *history[0].PrefixCacheHitRate)
+	}
+}

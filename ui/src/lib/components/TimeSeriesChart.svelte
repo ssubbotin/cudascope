@@ -7,7 +7,12 @@
 	interface Series {
 		label: string;
 		color: string;
-		data: number[];
+		/**
+		 * null is a gap: the window measured nothing. uPlot leaves the line
+		 * open there, and spanGaps below joins the two readings around it
+		 * rather than dropping the line to the axis.
+		 */
+		data: (number | null)[];
 	}
 
 	interface Props {
@@ -101,6 +106,10 @@
 					width: 1.5,
 					fill: s.color + '20',
 					points: { show: false },
+					// Join the readings across a window that measured nothing.
+					// Without this the line is a scatter of short segments on
+					// any series that only updates when work arrives.
+					spanGaps: true,
 				}))
 			]
 		};
@@ -109,10 +118,15 @@
 	}
 
 	function buildData(): uPlot.AlignedData {
+		// A typed array cannot hold a gap: null becomes zero in it, which is
+		// the floor of the chart and reads as a measurement. A series with
+		// gaps stays a plain array.
 		return [
 			new Float64Array(timestamps),
-			...series.map((s) => new Float64Array(s.data))
-		];
+			...series.map((s) =>
+				s.data.some((v) => v == null) ? (s.data as (number | null)[]) : new Float64Array(s.data as number[])
+			)
+		] as uPlot.AlignedData;
 	}
 
 	function createChart() {

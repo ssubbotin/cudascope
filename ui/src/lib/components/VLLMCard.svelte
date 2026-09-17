@@ -17,8 +17,10 @@
 		return v.toFixed(2);
 	}
 
-	function formatMs(seconds: number): string {
-		if (seconds <= 0) return '--';
+	// null is a window that measured nothing, which reads the same way here
+	// as a zero did before: there is no latency to show.
+	function formatMs(seconds: number | null): string {
+		if (seconds == null || seconds <= 0) return '--';
 		const ms = seconds * 1000;
 		if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
 		return ms.toFixed(0) + 'ms';

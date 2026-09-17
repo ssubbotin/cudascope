@@ -211,3 +211,86 @@ func TestCollectReadsEitherCacheMetricName(t *testing.T) {
 		t.Fatalf("kv cache usage = %v, want 0.77", m.KVCacheUsage)
 	}
 }
+
+// The prefix cache is queried while a prompt is prefilled, so a long
+// generation is scrape after scrape with no new queries. A rate of zero
+// there is not a measurement: it used to be stored like one, which drew the
+// chart down to the floor for the length of the generation and pulled the
+// rollup averages down with it.
+func TestAWindowWithoutPrefillHasNoHitRate(t *testing.T) {
+	f := newFakeVLLM(t, "", "")
+	f.body.Store("vllm:num_requests_running 1.0\n" +
+		"vllm:prefix_cache_queries_total 100.0\nvllm:prefix_cache_hits_total 90.0\n")
+
+	v := NewVLLMCollector(f.srv.URL, "local")
+	// The first scrape has nothing to compare against.
+	mustCollect(t, v)
+
+	f.body.Store("vllm:num_requests_running 1.0\n" +
+		"vllm:prefix_cache_queries_total 200.0\nvllm:prefix_cache_hits_total 180.0\n")
+	m := mustCollect(t, v)
+	if m.PrefixCacheHitRate == nil {
+		t.Fatal("want a rate from a window with 100 new queries, got none")
+	}
+	if *m.PrefixCacheHitRate != 0.9 {
+		t.Fatalf("hit rate = %v, want 0.9", *m.PrefixCacheHitRate)
+	}
+
+	// The counters stand still: the engine is generating, not prefilling.
+	m = mustCollect(t, v)
+	if m.PrefixCacheHitRate != nil {
+		t.Fatalf("want no rate from a window with no queries, got %v", *m.PrefixCacheHitRate)
+	}
+}
+
+// A window that did measure a rate of zero is a reading, and reads back as
+// one. Every prefill missed the cache, which a cold engine really does.
+func TestAMeasuredZeroHitRateIsAReading(t *testing.T) {
+	f := newFakeVLLM(t, "", "")
+	f.body.Store("vllm:num_requests_running 1.0\n" +
+		"vllm:prefix_cache_queries_total 10.0\nvllm:prefix_cache_hits_total 0.0\n")
+
+	v := NewVLLMCollector(f.srv.URL, "local")
+	mustCollect(t, v)
+
+	f.body.Store("vllm:num_requests_running 1.0\n" +
+		"vllm:prefix_cache_queries_total 20.0\nvllm:prefix_cache_hits_total 0.0\n")
+	m := mustCollect(t, v)
+	if m.PrefixCacheHitRate == nil {
+		t.Fatal("want a rate of zero, got none")
+	}
+	if *m.PrefixCacheHitRate != 0 {
+		t.Fatalf("hit rate = %v, want 0", *m.PrefixCacheHitRate)
+	}
+}
+
+// The latency averages are the same shape: no request finished inside the
+// window means no average to report.
+func TestAWindowWithoutAFinishedRequestHasNoLatency(t *testing.T) {
+	f := newFakeVLLM(t, "", "")
+	f.body.Store("vllm:num_requests_running 1.0\n" +
+		"vllm:time_to_first_token_seconds_sum 10.0\nvllm:time_to_first_token_seconds_count 5.0\n" +
+		"vllm:time_per_output_token_seconds_sum 1.0\nvllm:time_per_output_token_seconds_count 100.0\n")
+
+	v := NewVLLMCollector(f.srv.URL, "local")
+	mustCollect(t, v)
+
+	f.body.Store("vllm:num_requests_running 1.0\n" +
+		"vllm:time_to_first_token_seconds_sum 14.0\nvllm:time_to_first_token_seconds_count 7.0\n" +
+		"vllm:time_per_output_token_seconds_sum 1.5\nvllm:time_per_output_token_seconds_count 150.0\n")
+	m := mustCollect(t, v)
+	if m.TimeToFirstTokenAvg == nil || *m.TimeToFirstTokenAvg != 2 {
+		t.Fatalf("ttft = %v, want 2s over the window", m.TimeToFirstTokenAvg)
+	}
+	if m.TimePerOutputTokenAvg == nil || *m.TimePerOutputTokenAvg != 0.01 {
+		t.Fatalf("tpot = %v, want 10ms over the window", m.TimePerOutputTokenAvg)
+	}
+
+	m = mustCollect(t, v)
+	if m.TimeToFirstTokenAvg != nil {
+		t.Fatalf("want no ttft from a quiet window, got %v", *m.TimeToFirstTokenAvg)
+	}
+	if m.TimePerOutputTokenAvg != nil {
+		t.Fatalf("want no tpot from a quiet window, got %v", *m.TimePerOutputTokenAvg)
+	}
+}

@@ -60,8 +60,16 @@
 	]);
 
 	let latencySeries = $derived([
-		{ label: 'TTFT (ms)', color: '#f87171', data: historyData.map((m) => m.ttft_avg * 1000) },
-		{ label: 'per token (ms)', color: '#fb923c', data: historyData.map((m) => m.tpot_avg * 1000) }
+		{
+			label: 'TTFT (ms)',
+			color: '#f87171',
+			data: historyData.map((m) => (m.ttft_avg == null ? null : m.ttft_avg * 1000))
+		},
+		{
+			label: 'per token (ms)',
+			color: '#fb923c',
+			data: historyData.map((m) => (m.tpot_avg == null ? null : m.tpot_avg * 1000))
+		}
 	]);
 
 	let tokensSeries = $derived([
@@ -70,7 +78,13 @@
 	]);
 
 	let cacheSeries = $derived([
-		{ label: 'Hit Rate %', color: '#2dd4bf', data: historyData.map((m) => m.prefix_cache_hit_rate * 100) }
+		{
+			label: 'Hit Rate %',
+			color: '#2dd4bf',
+			data: historyData.map((m) =>
+				m.prefix_cache_hit_rate == null ? null : m.prefix_cache_hit_rate * 100
+			)
+		}
 	]);
 
 	function formatTps(v: number): string {
@@ -79,8 +93,8 @@
 		return v.toFixed(2);
 	}
 
-	function formatMs(seconds: number): string {
-		if (seconds <= 0) return '--';
+	function formatMs(seconds: number | null): string {
+		if (seconds == null || seconds <= 0) return '--';
 		const ms = seconds * 1000;
 		if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
 		return ms.toFixed(0) + 'ms';
@@ -177,7 +191,9 @@
 			</div>
 			<div class="bg-bg-card border border-border rounded-lg p-3 text-center">
 				<div class="text-xs text-text-muted">Cache Hit</div>
-				<div class="text-xl font-mono font-semibold text-text-secondary">{(m.prefix_cache_hit_rate * 100).toFixed(0)}%</div>
+				<div class="text-xl font-mono font-semibold text-text-secondary">
+					{m.prefix_cache_hit_rate == null ? '--' : (m.prefix_cache_hit_rate * 100).toFixed(0) + '%'}
+				</div>
 			</div>
 		</div>
 	{:else}

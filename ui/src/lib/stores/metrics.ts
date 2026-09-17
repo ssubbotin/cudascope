@@ -77,10 +77,15 @@ export interface VLLMMetrics {
 	kv_cache_usage: number;
 	generation_tokens_total: number;
 	prompt_tokens_total: number;
-	ttft_avg: number;
-	tpot_avg: number;
+	/**
+	 * Ratios over one scrape window. null means the window measured nothing:
+	 * no request finished, no prompt was prefilled. Zero means it measured
+	 * zero, which is a different statement.
+	 */
+	ttft_avg: number | null;
+	tpot_avg: number | null;
 	token_throughput: number;
-	prefix_cache_hit_rate: number;
+	prefix_cache_hit_rate: number | null;
 	num_preemptions: number;
 }
 
