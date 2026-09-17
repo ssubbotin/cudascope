@@ -60,7 +60,15 @@
 			scales: {
 				x: {
 					time: true,
-					range: xMin != null && xMax != null ? [xMin, xMax] : undefined,
+					// A function rather than a fixed pair: the window is a prop,
+					// and a chart that is never rebuilt would otherwise keep the
+					// range it was born with. The host charts are exactly that
+					// case, so switching to a wider range left them showing the
+					// first window they ever drew.
+					range: (u: uPlot, dataMin: number, dataMax: number) =>
+						xMin != null && xMax != null
+							? [xMin, xMax]
+							: uPlot.rangeNum(dataMin, dataMax, 0.1, true),
 				},
 				y: {
 					auto: yMax === undefined,
@@ -147,6 +155,16 @@
 			chart.setData(buildData());
 		} else if (!chart && timestamps.length >= 2 && container) {
 			createChart();
+		}
+	});
+
+	// React to the window moving. Without this a chart only follows the
+	// selected range when something else happens to rebuild it.
+	$effect(() => {
+		const min = xMin;
+		const max = xMax;
+		if (chart && min != null && max != null) {
+			chart.setScale('x', { min, max });
 		}
 	});
 

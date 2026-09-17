@@ -615,3 +615,119 @@ func TestAnXidFromAnUnidentifiedCardIsANodeEvent(t *testing.T) {
 		t.Fatalf("want it recorded, got %d rows", store.openCount())
 	}
 }
+
+// throttleSample is a reading whose clocks are being held back for the
+// given NVML reasons.
+func throttleSample(mask uint64) []collector.GPUMetrics {
+	return []collector.GPUMetrics{{NodeID: "local", GPUID: 0, Temperature: 60, ThrottleReasons: mask}}
+}
+
+const (
+	maskIdle      = 1  // the card has nothing to do
+	maskPowerCap  = 4  // holding back to stay inside the power budget
+	maskSwThermal = 32 // holding back to stay inside the temperature budget
+)
+
+func throttleConfig() Config {
+	cfg := testConfig()
+	cfg.Throttle = true
+	return cfg
+}
+
+// A card that holds itself back is the answer to "why is this job slower
+// than yesterday". The mask was collected and shown on the card from the
+// start, and never judged, so the journal stayed empty while the dashboard
+// said "throttled".
+func TestThrottlingOpensAnEventAfterTheDwell(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(throttleConfig(), store, c.now)
+
+	e.Observe(throttleSample(maskPowerCap))
+	if got := len(e.Active()); got != 0 {
+		t.Fatalf("event opened before the dwell elapsed: %d", got)
+	}
+
+	c.advance(30 * time.Second)
+	e.Observe(throttleSample(maskPowerCap))
+
+	active := e.Active()
+	if len(active) != 1 || active[0].Kind != KindThrottled {
+		t.Fatalf("want one throttle event, got %+v", active)
+	}
+	if active[0].LastValue != maskPowerCap {
+		t.Fatalf("want the reason mask kept, got %v", active[0].LastValue)
+	}
+	if store.openCount() != 1 {
+		t.Fatalf("want it recorded, got %d rows", store.openCount())
+	}
+
+	// Clocks come back, and after the clear dwell the event closes.
+	e.Observe(throttleSample(0))
+	c.advance(61 * time.Second)
+	e.Observe(throttleSample(0))
+	if got := len(e.Active()); got != 0 {
+		t.Fatalf("event stayed open after the card was free again: %d", got)
+	}
+}
+
+// Idle is a state, not a slowdown. Reporting it would mark every quiet GPU
+// as a problem.
+func TestAnIdleCardIsNotThrottling(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(throttleConfig(), store, c.now)
+
+	e.Observe(throttleSample(maskIdle))
+	c.advance(time.Hour)
+	e.Observe(throttleSample(maskIdle))
+
+	if got := len(e.Active()); got != 0 {
+		t.Fatalf("an idle card raised %d events", got)
+	}
+	if store.openCount() != 0 {
+		t.Fatalf("an idle card recorded %d rows", store.openCount())
+	}
+}
+
+// One event covers a stretch during which the reason can change, so the
+// journal has to name every reason seen rather than the last one or the
+// numerically largest.
+func TestEveryReasonSeenDuringTheEventIsKept(t *testing.T) {
+	c, store := newClock(), newStore()
+	e := New(throttleConfig(), store, c.now)
+
+	e.Observe(throttleSample(maskPowerCap))
+	c.advance(30 * time.Second)
+	e.Observe(throttleSample(maskPowerCap))
+
+	c.advance(10 * time.Second)
+	e.Observe(throttleSample(maskSwThermal))
+
+	active := e.Active()
+	if len(active) != 1 {
+		t.Fatalf("want one event, got %d", len(active))
+	}
+	peak := uint64(active[0].PeakValue)
+	if peak&maskPowerCap == 0 {
+		t.Fatalf("the power cap was dropped from the event: mask %d", peak)
+	}
+	if peak&maskSwThermal == 0 {
+		t.Fatalf("the thermal reason was dropped from the event: mask %d", peak)
+	}
+	if active[0].LastValue != maskSwThermal {
+		t.Fatalf("want the newest reason as the last value, got %v", active[0].LastValue)
+	}
+}
+
+func TestThrottleAlertsCanBeTurnedOff(t *testing.T) {
+	c, store := newClock(), newStore()
+	cfg := testConfig() // Throttle stays false
+	e := New(cfg, store, c.now)
+
+	e.Observe(throttleSample(maskPowerCap))
+	c.advance(time.Hour)
+	e.Observe(throttleSample(maskPowerCap))
+
+	if got := len(e.Active()); got != 0 {
+		t.Fatalf("a disabled kind raised %d events", got)
+	}
+}

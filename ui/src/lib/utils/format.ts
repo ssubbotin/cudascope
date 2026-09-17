@@ -48,7 +48,8 @@ const alertNames: Record<string, string> = {
 	mem_util: 'Memory utilization',
 	node_silent: 'Node silent',
 	collector_stalled: 'Collection stalled',
-	xid: 'Driver fault (Xid)'
+	xid: 'Driver fault (Xid)',
+	throttled: 'Throttled'
 };
 
 export function alertName(kind: string): string {
@@ -76,6 +77,12 @@ export function alertSummary(
 	if (kind === 'xid') {
 		return `code ${last}, ${peak} error${peak === 1 ? '' : 's'}`;
 	}
+	if (kind === 'throttled') {
+		const now = throttleReasonNames(last);
+		const seen = throttleReasonNames(peak);
+		const head = now.length > 0 ? `now ${now.join(', ')}` : 'clocks free again';
+		return seen.length > now.length ? `${head}; seen ${seen.join(', ')}` : head;
+	}
 	if (kind === 'node_silent' || kind === 'collector_stalled') {
 		return `silent for ${formatDuration(last)}, threshold ${formatDuration(threshold)}`;
 	}
@@ -85,12 +92,13 @@ export function alertSummary(
 // A driver fault has no threshold to cross, so printing one reads as a
 // measurement that was never taken.
 export function alertThreshold(kind: string, threshold: number): string {
-	if (kind === 'xid') return '\u2014';
+	if (kind === 'xid' || kind === 'throttled') return '\u2014';
 	return alertValue(kind, threshold);
 }
 
 export function alertPeak(kind: string, peak: number): string {
 	if (kind === 'xid') return `${peak} error${peak === 1 ? '' : 's'}`;
+	if (kind === 'throttled') return throttleReasonNames(peak).join(', ') || '—';
 	return alertValue(kind, peak);
 }
 

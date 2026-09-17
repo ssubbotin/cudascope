@@ -341,6 +341,7 @@ func newAlertEngine(db *storage.DB, cfg *config.Config, localNode string) *alert
 		TempMax:           cfg.AlertTempMax,
 		GPUUtil:           cfg.AlertGPUUtil,
 		MemUtil:           cfg.AlertMemUtil,
+		Throttle:          cfg.AlertThrottle,
 		For:               cfg.AlertFor,
 		Clear:             cfg.AlertClear,
 		NodeOfflineAfter:  cfg.NodeOfflineAfter,
