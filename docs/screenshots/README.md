@@ -1,7 +1,15 @@
 # Screenshots
 
+`dashboard.png`, `gpu-detail.png`, `host.png` and `alerts.png` are the ones
+the README shows. The `before-*` / `after-*` pairs belong to an older change
+and are kept for its pull request.
+
+All of them are produced the same way.
+
+## The pairs
+
 Pairs of the same page, same data, same viewport, taken from two builds:
-`before-*` from `main`, `after-*` from this branch.
+`before-*` from `main`, `after-*` from that branch.
 
 How they were produced, so they can be redone:
 

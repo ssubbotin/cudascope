@@ -8,6 +8,8 @@ docker run -d --gpus all -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascop
 
 Then open [http://localhost:9090](http://localhost:9090).
 
+![CudaScope dashboard](docs/screenshots/dashboard.png)
+
 - **Direct NVML access** via [go-nvml](https://github.com/NVIDIA/go-nvml) - no nvidia-smi parsing
 - **Throttle reasons, ECC counters and Xid faults** - why a card slowed down, and when the driver reported a fault
 - **vLLM integration** - scrapes vLLM `/metrics` for tok/s, KV cache, latency, active model
@@ -97,6 +99,11 @@ Alert thresholds of `0` mean disabled. vLLM URL empty means disabled.
 - Host CPU and RAM history charts
 - GPU process list with VRAM usage
 
+Every card is a link to a page of its own. The host page carries the same
+treatment for CPU, memory, load average and network:
+
+![Host page](docs/screenshots/host.png)
+
 ### GPU Detail Page
 
 Click any GPU card for full-screen charts:
@@ -113,6 +120,8 @@ Click any GPU card for full-screen charts:
   on the cards that report them
 
 All charts support synchronized crosshairs and configurable time ranges.
+
+![GPU detail page](docs/screenshots/gpu-detail.png)
 
 ### Multi-Node
 
@@ -150,6 +159,8 @@ mode. Nothing has to be watching for an alert to fire or to be recorded.
 | `collector_stalled` | Standalone only: local collection is older than `--collect-stale-after` |
 | `xid` | The driver reported an Xid fault on a card. A burst is one entry with a count and the newest code |
 | `throttled` | A card held its own clocks back for longer than `--alert-for`. The entry names every reason seen while it lasted: power cap, thermal, hardware slowdown. Idle and configured clock limits are states rather than slowdowns and are left out |
+
+![Alert journal](docs/screenshots/alerts.png)
 
 ### vLLM Integration
 

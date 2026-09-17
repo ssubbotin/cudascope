@@ -31,22 +31,22 @@
      and sat lower than its neighbours. -->
 <a
 	href={detailHref}
-	class="block h-full bg-bg-card border rounded-xl p-5 hover:bg-bg-card-hover transition-all duration-200 cursor-pointer {hasAlert
+	class="flex h-full flex-col bg-bg-card border rounded-xl p-5 hover:bg-bg-card-hover transition-all duration-200 cursor-pointer {hasAlert
 		? 'border-red/60'
 		: 'border-border hover:border-accent/40'}"
 >
-	<div>
-		<div class="flex items-center justify-between mb-4">
-			<div>
+	<div class="flex flex-1 flex-col">
+		<div class="flex items-start justify-between gap-2 mb-4">
+			<div class="min-w-0">
 				<h3 class="text-sm font-medium text-text-primary">
 					{#if showNode}
 						<span class="text-text-muted">{device.node_id}:</span>
 					{/if}
 					GPU {device.id}
 				</h3>
-				<p class="text-xs text-text-muted mt-0.5">{device.name}</p>
+				<p class="text-xs text-text-muted mt-0.5 line-clamp-2 min-h-[2rem]">{device.name}</p>
 			</div>
-			<div class="flex items-center gap-1.5">
+			<div class="flex shrink-0 items-center gap-1.5">
 				{#if hasAlert}
 					<span class="text-xs px-2 py-0.5 rounded-full bg-red/10 text-red border border-red/20" title={gpuAlerts.map((a) => `${alertName(a.kind)}: ${alertValue(a.kind, a.last_value)} (peak ${alertValue(a.kind, a.peak_value)}, threshold ${alertValue(a.kind, a.threshold)})`).join(', ')}>
 						<svg class="w-3 h-3 inline-block -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -72,7 +72,10 @@
 
 		{#if metrics}
 			<!-- Utilization -->
-			<div class="space-y-3">
+			<!-- gap-3 rather than space-y-3: the latter sets a margin on every
+			     row after the first and outweighs the plot's mt-auto, which is
+			     what pins the plot to the bottom of the card. -->
+			<div class="flex flex-1 flex-col gap-3">
 				<div>
 					<div class="flex justify-between text-xs mb-1">
 						<span class="text-text-muted">GPU</span>
@@ -108,7 +111,7 @@
 				<!-- Sparkline. Always rendered: hiding it while the buffer fills
 				     made the card change height a second after it appeared, and
 				     left it shorter than its neighbours until then. -->
-				<div class="pt-2 border-t border-border">
+				<div class="mt-auto pt-2 border-t border-border">
 					<div class="text-xs text-text-muted mb-1">Utilization</div>
 					<Sparkline data={utilHistory} min={0} max={100} color={utilColor(metrics.gpu_util)} />
 				</div>
