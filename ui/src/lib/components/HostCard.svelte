@@ -17,7 +17,7 @@
 
 <a
 	href={detailHref}
-	class="block h-full bg-bg-card border border-border rounded-xl p-5 hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 cursor-pointer"
+	class="flex h-full flex-col bg-bg-card border border-border rounded-xl p-5 hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 cursor-pointer"
 >
 	<div class="flex items-center gap-2 mb-4">
 		<svg class="w-4 h-4 text-text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -33,7 +33,9 @@
 	</div>
 
 	{#if metrics}
-		<div class="space-y-3">
+		<!-- gap-3, never space-y-3: a margin on each row would outweigh
+		     the plot's mt-auto and unpin it from the bottom. -->
+		<div class="flex flex-1 flex-col gap-3">
 			<div>
 				<div class="flex justify-between text-xs mb-1">
 					<span class="text-text-muted">CPU</span>
@@ -65,17 +67,17 @@
 				</div>
 				<div class="text-center">
 					<div class="text-xs text-text-muted">Net Rx</div>
-					<div class="text-sm font-mono text-text-secondary">{formatNetRate(metrics.net_rx)}</div>
+					<div class="text-sm font-mono text-text-secondary whitespace-nowrap">{formatNetRate(metrics.net_rx)}</div>
 				</div>
 				<div class="text-center">
 					<div class="text-xs text-text-muted">Net Tx</div>
-					<div class="text-sm font-mono text-text-secondary">{formatNetRate(metrics.net_tx)}</div>
+					<div class="text-sm font-mono text-text-secondary whitespace-nowrap">{formatNetRate(metrics.net_tx)}</div>
 				</div>
 			</div>
 
 			<!-- Plot, in the same place and of the same height as on the other
 			     cards, over the same stretch of time. -->
-			<div class="pt-2 border-t border-border">
+			<div class="mt-auto pt-2 border-t border-border">
 				<div class="text-xs text-text-muted mb-1">CPU</div>
 				<Sparkline data={cpuHistory} min={0} max={100} color={utilColor(metrics.cpu_percent)} />
 			</div>

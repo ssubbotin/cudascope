@@ -27,7 +27,7 @@
 	let throughputData = $derived(history.map(m => m.token_throughput));
 </script>
 
-<a href="/vllm" class="block h-full bg-bg-card border border-border rounded-xl p-5 hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 cursor-pointer">
+<a href="/vllm" class="flex h-full flex-col bg-bg-card border border-border rounded-xl p-5 hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 cursor-pointer">
 	<div class="flex items-center gap-2 mb-4">
 		<svg class="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 			<path d="M12 2L2 7l10 5 10-5-10-5z"/>
@@ -41,7 +41,9 @@
 	</div>
 
 	{#if metrics}
-		<div class="space-y-3">
+		<!-- gap-3, never space-y-3: a margin on each row would outweigh
+		     the plot's mt-auto and unpin it from the bottom. -->
+		<div class="flex flex-1 flex-col gap-3">
 			<!-- Token throughput -->
 			<div>
 				<div class="flex justify-between text-xs mb-1">
@@ -89,14 +91,6 @@
 				</div>
 			</div>
 
-			<!-- Plot. Last in the card, under a divider, the same shape and
-			     height as on the other cards, and covering the same stretch of
-			     time. No upper bound: tokens per second are not a percentage. -->
-			<div class="pt-2 border-t border-border">
-				<div class="text-xs text-text-muted mb-1">Throughput</div>
-				<Sparkline data={throughputData} color="var(--color-accent)" />
-			</div>
-
 			<!-- Prefix cache -->
 			{#if metrics.prefix_cache_hit_rate > 0}
 				<div>
@@ -107,6 +101,16 @@
 					<ProgressBar value={metrics.prefix_cache_hit_rate * 100} color="var(--color-accent)" />
 				</div>
 			{/if}
+
+			<!-- Plot. Pinned to the bottom of the card with mt-auto, so the
+			     divider above it lines up with the other cards' however much
+			     content sits above: a card gains rows as a badge appears or a
+			     rate turns up, and the plot should not move with them. No upper
+			     bound, tokens per second are not a percentage. -->
+			<div class="mt-auto pt-2 border-t border-border">
+				<div class="text-xs text-text-muted mb-1">Throughput</div>
+				<Sparkline data={throughputData} color="var(--color-accent)" />
+			</div>
 		</div>
 	{:else}
 		<div class="text-sm text-text-muted py-4 text-center">
