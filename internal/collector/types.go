@@ -85,7 +85,11 @@ type GPUProcess struct {
 	GPUID     int    `json:"gpu_id"`
 	PID       uint32 `json:"pid"`
 	Name      string `json:"name"`
-	GPUMem    uint64 `json:"gpu_mem"` // MiB
+	// Cmdline is the command line with secret values masked, so a list of
+	// processes all called "python" says which job each one is. Empty when
+	// it could not be read.
+	Cmdline string `json:"cmdline,omitempty"`
+	GPUMem  uint64 `json:"gpu_mem"` // MiB
 }
 
 // HostMetrics holds a snapshot of host-level metrics.

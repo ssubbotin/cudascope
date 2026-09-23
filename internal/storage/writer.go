@@ -98,7 +98,7 @@ func (db *DB) WriteGPUProcesses(procs []collector.GPUProcess) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO gpu_processes (ts, node_id, gpu_id, pid, name, gpu_mem) VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO gpu_processes (ts, node_id, gpu_id, pid, name, cmdline, gpu_mem) VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func (db *DB) WriteGPUProcesses(procs []collector.GPUProcess) error {
 		if nodeID == "" {
 			nodeID = "local"
 		}
-		if _, err := stmt.Exec(p.Timestamp, nodeID, p.GPUID, p.PID, p.Name, p.GPUMem); err != nil {
+		if _, err := stmt.Exec(p.Timestamp, nodeID, p.GPUID, p.PID, p.Name, p.Cmdline, p.GPUMem); err != nil {
 			return err
 		}
 	}

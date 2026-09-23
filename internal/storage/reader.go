@@ -146,12 +146,12 @@ func (db *DB) GetGPUProcesses(gpuID int, nodeID string) ([]collector.GPUProcess,
 	var query string
 	var args []any
 	if nodeID != "" {
-		query = `SELECT ts, COALESCE(node_id, 'local'), gpu_id, pid, name, gpu_mem FROM gpu_processes
+		query = `SELECT ts, COALESCE(node_id, 'local'), gpu_id, pid, name, COALESCE(cmdline, ''), gpu_mem FROM gpu_processes
 			WHERE gpu_id = ? AND COALESCE(node_id, 'local') = ? AND ts >= ?
 			AND ts = (SELECT MAX(ts) FROM gpu_processes WHERE gpu_id = ? AND COALESCE(node_id, 'local') = ?)`
 		args = []any{gpuID, nodeID, cutoff, gpuID, nodeID}
 	} else {
-		query = `SELECT ts, COALESCE(node_id, 'local'), gpu_id, pid, name, gpu_mem FROM gpu_processes
+		query = `SELECT ts, COALESCE(node_id, 'local'), gpu_id, pid, name, COALESCE(cmdline, ''), gpu_mem FROM gpu_processes
 			WHERE gpu_id = ? AND ts >= ?
 			AND ts = (SELECT MAX(ts) FROM gpu_processes WHERE gpu_id = ?)`
 		args = []any{gpuID, cutoff, gpuID}
@@ -166,7 +166,7 @@ func (db *DB) GetGPUProcesses(gpuID int, nodeID string) ([]collector.GPUProcess,
 	var procs []collector.GPUProcess
 	for rows.Next() {
 		var p collector.GPUProcess
-		if err := rows.Scan(&p.Timestamp, &p.NodeID, &p.GPUID, &p.PID, &p.Name, &p.GPUMem); err != nil {
+		if err := rows.Scan(&p.Timestamp, &p.NodeID, &p.GPUID, &p.PID, &p.Name, &p.Cmdline, &p.GPUMem); err != nil {
 			return nil, err
 		}
 		procs = append(procs, p)
@@ -331,7 +331,7 @@ func (db *DB) GetAllGPUProcesses() ([]collector.GPUProcess, error) {
 			WHERE ts >= ?
 			GROUP BY COALESCE(node_id, 'local'), gpu_id
 		)
-		SELECT p.ts, COALESCE(p.node_id, 'local'), p.gpu_id, p.pid, p.name, p.gpu_mem
+		SELECT p.ts, COALESCE(p.node_id, 'local'), p.gpu_id, p.pid, p.name, COALESCE(p.cmdline, ''), p.gpu_mem
 		FROM gpu_processes p
 		JOIN ticks t
 			ON COALESCE(p.node_id, 'local') = t.node_id
@@ -347,7 +347,7 @@ func (db *DB) GetAllGPUProcesses() ([]collector.GPUProcess, error) {
 	var procs []collector.GPUProcess
 	for rows.Next() {
 		var p collector.GPUProcess
-		if err := rows.Scan(&p.Timestamp, &p.NodeID, &p.GPUID, &p.PID, &p.Name, &p.GPUMem); err != nil {
+		if err := rows.Scan(&p.Timestamp, &p.NodeID, &p.GPUID, &p.PID, &p.Name, &p.Cmdline, &p.GPUMem); err != nil {
 			return nil, err
 		}
 		procs = append(procs, p)

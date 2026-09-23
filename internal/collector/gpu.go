@@ -232,14 +232,7 @@ func (gc *GPUCollector) CollectProcesses() []GPUProcess {
 			continue
 		}
 		for _, info := range infos {
-			name := readProcessName(info.Pid)
-			procs = append(procs, GPUProcess{
-				Timestamp: now,
-				GPUID:     i,
-				PID:       info.Pid,
-				Name:      name,
-				GPUMem:    info.UsedGpuMemory / (1024 * 1024),
-			})
+			procs = append(procs, newGPUProcess(i, info, now))
 		}
 
 		// Also check graphics processes
@@ -260,14 +253,7 @@ func (gc *GPUCollector) CollectProcesses() []GPUProcess {
 			if found {
 				continue
 			}
-			name := readProcessName(info.Pid)
-			procs = append(procs, GPUProcess{
-				Timestamp: now,
-				GPUID:     i,
-				PID:       info.Pid,
-				Name:      name,
-				GPUMem:    info.UsedGpuMemory / (1024 * 1024),
-			})
+			procs = append(procs, newGPUProcess(i, info, now))
 		}
 	}
 
@@ -294,6 +280,17 @@ func (gc *GPUCollector) reportProcessFailure(ret nvml.Return) {
 // Shutdown cleans up NVML.
 func (gc *GPUCollector) Shutdown() {
 	nvml.Shutdown()
+}
+
+func newGPUProcess(gpuID int, info nvml.ProcessInfo, now int64) GPUProcess {
+	return GPUProcess{
+		Timestamp: now,
+		GPUID:     gpuID,
+		PID:       info.Pid,
+		Name:      readProcessName(info.Pid),
+		Cmdline:   readCmdline(info.Pid),
+		GPUMem:    info.UsedGpuMemory / (1024 * 1024),
+	}
 }
 
 func readProcessName(pid uint32) string {

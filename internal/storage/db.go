@@ -52,6 +52,9 @@ var migration012 string
 //go:embed migrations/013_ollama.sql
 var migration013 string
 
+//go:embed migrations/014_process_cmdline.sql
+var migration014 string
+
 // Options tunes the queries whose answer depends on how often this
 // deployment collects.
 type Options struct {
@@ -237,6 +240,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration 013: %w", err)
 		}
 		log.Println("applied migration 013 (ollama loaded models)")
+	}
+
+	if version < 14 {
+		if _, err := db.conn.Exec(migration014); err != nil {
+			return fmt.Errorf("migration 014: %w", err)
+		}
+		log.Println("applied migration 014 (process command lines)")
 	}
 
 	return nil
