@@ -56,6 +56,8 @@ export interface GPUProcess {
 	gpu_id: number;
 	pid: number;
 	name: string;
+	/** Secret values are masked by the collector. Absent when unreadable. */
+	cmdline?: string;
 	gpu_mem: number;
 }
 

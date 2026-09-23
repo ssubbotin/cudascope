@@ -107,7 +107,14 @@ Alert thresholds of `0` mean disabled. An empty vLLM or ollama URL means disable
 - **Ollama card** with the loaded model, its share of VRAM, and the keep alive countdown
 - Multi-GPU overlay charts (utilization, memory)
 - Host CPU and RAM history charts
-- GPU process list with VRAM usage
+- GPU process list with VRAM usage and each process's command line, so a
+  card running three jobs called `python` says which is which
+
+Command lines are masked where they are read, before they are stored or sent
+to a hub: the value after an argument whose name contains `key`, `token`,
+`secret`, `password` or `passwd` shows as `***`, and so do the credentials in a
+URL. The rule goes by names, so a secret passed under some other name is shown
+as it is. A dashboard other people can reach should have `CUDASCOPE_AUTH` set.
 
 Every card is a link to a page of its own. The host page carries the same
 treatment for CPU, memory, load average and network:
