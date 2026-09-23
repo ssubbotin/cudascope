@@ -3,7 +3,7 @@
 Lightweight, self-hosted NVIDIA GPU monitoring with real-time dashboards and historical metrics.
 
 ```bash
-docker run -d --gpus all -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascope
+docker run -d --gpus all --pid=host -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascope
 ```
 
 Then open [http://localhost:9090](http://localhost:9090).
@@ -28,8 +28,14 @@ Docker with GPU access requires the [NVIDIA Container Toolkit](https://docs.nvid
 ### Standalone (single host)
 
 ```bash
-docker run -d --gpus all -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascope
+docker run -d --gpus all --pid=host -p 9090:9090 -v cudascope-data:/data ssubbotin/cudascope
 ```
+
+`--pid=host` is what fills the process list. NVML reports GPU processes by
+their host PID, and a container with a PID namespace of its own gets an empty
+list back without an error: the dashboard shows a busy GPU with nothing running
+on it, and the log says nothing. The Compose file sets the same thing as
+`pid: host`.
 
 Or with Compose:
 
@@ -143,6 +149,17 @@ When running in Swarm mode:
 Thresholds are evaluated on the collection path, on every sample, in every
 mode. Nothing has to be watching for an alert to fire or to be recorded.
 
+Out of the box only throttling, Xid faults and silence are judged. The
+temperature, GPU utilization and memory utilization alerts have no threshold
+until one is given (`0` means off), so on a fresh install a card can run hot for
+days without a single entry in the journal:
+
+```bash
+docker run -d --gpus all --pid=host -p 9090:9090 \
+  -e CUDASCOPE_ALERT_TEMP=85 \
+  -v cudascope-data:/data ssubbotin/cudascope
+```
+
 - An alert opens once the threshold has held for `--alert-for` and closes once
   the metric has been normal again for `--alert-clear`, so a value hovering at
   the threshold produces one event rather than hundreds
@@ -171,10 +188,15 @@ mode. Nothing has to be watching for an alert to fire or to be recorded.
 Monitor [ollama](https://github.com/ollama/ollama) alongside GPU metrics:
 
 ```bash
-docker run -d --gpus all -p 9090:9090 \
+docker run -d --gpus all --pid=host --network=host \
   -e CUDASCOPE_OLLAMA_URL=http://localhost:11434 \
   -v cudascope-data:/data ssubbotin/cudascope
 ```
+
+`--network=host` is what makes `localhost` mean the host. ollama listens on the
+host's loopback by default, and a container with a network of its own has a
+loopback of its own, so with `-p 9090:9090` the URL above reaches nothing. The
+dashboard is then served on the host's port 9090 (`--port` changes it).
 
 Ollama publishes no counters and no Prometheus endpoint, so there are no rates
 here. What it does publish is the state of the moment, and the state answers
@@ -200,10 +222,13 @@ The readings are kept for as long as the raw samples are (`--retention-raw`,
 Monitor [vLLM](https://github.com/vllm-project/vllm) inference servers alongside GPU metrics:
 
 ```bash
-docker run -d --gpus all -p 9090:9090 \
+docker run -d --gpus all --pid=host --network=host \
   -e CUDASCOPE_VLLM_URL=http://localhost:8000 \
   -v cudascope-data:/data ssubbotin/cudascope
 ```
+
+`--network=host` for the same reason as with ollama above: `localhost` inside a
+container with a network of its own is the container.
 
 Works in standalone mode and in agent mode: each agent scrapes the vLLM server
 on its own node and pushes the numbers to the hub.
@@ -238,7 +263,7 @@ escaped, so a card with a quote in its name cannot break the exposition.
 Enable basic auth:
 
 ```bash
-docker run -d --gpus all -p 9090:9090 \
+docker run -d --gpus all --pid=host -p 9090:9090 \
   -e CUDASCOPE_AUTH=admin:secret \
   -v cudascope-data:/data ssubbotin/cudascope
 ```
@@ -255,7 +280,7 @@ docker run -d -p 9090:9090 -e CUDASCOPE_INGEST_TOKEN=s3cret \
   -v cudascope-data:/data ssubbotin/cudascope --mode=hub
 
 # every GPU node
-docker run -d --gpus all -e CUDASCOPE_INGEST_TOKEN=s3cret \
+docker run -d --gpus all --pid=host -e CUDASCOPE_INGEST_TOKEN=s3cret \
   ssubbotin/cudascope --mode=agent --hub-url=http://hub:9090
 ```
 
