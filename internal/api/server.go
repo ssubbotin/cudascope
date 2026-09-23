@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sergey/cudascope/internal/alerts"
+	"github.com/sergey/cudascope/internal/buildinfo"
 	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/storage"
 )
@@ -43,6 +44,10 @@ type Options struct {
 	// StateInterval is how often the state snapshot is resent even when
 	// nothing changed. Zero selects the default.
 	StateInterval time.Duration
+
+	// Build is the running build, reported by /api/v1/status for the
+	// dashboard's footer.
+	Build buildinfo.Info
 }
 
 // Server is the HTTP API server.
@@ -59,6 +64,7 @@ type Server struct {
 	authPass    string
 	ingestToken string
 	corsOrigin  string
+	build       buildinfo.Info
 
 	// collectStaleAfter makes healthz fail when metrics stop arriving.
 	// Zero disables the check.
@@ -86,6 +92,7 @@ func NewServer(opts Options) *Server {
 		stateTrigger:  make(chan struct{}, 1),
 		ingestToken:   opts.IngestToken,
 		corsOrigin:    opts.CORSOrigin,
+		build:         opts.Build,
 	}
 	if s.stateInterval <= 0 {
 		s.stateInterval = defaultStateInterval
@@ -353,6 +360,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"hosts":     hosts,
 		"processes": procs,
 		"alerts":    s.openAlerts(),
+		"build":     s.build,
 	}
 
 	// Include latest vLLM metrics if available

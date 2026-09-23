@@ -116,6 +116,10 @@ to a hub: the value after an argument whose name contains `key`, `token`,
 URL. The rule goes by names, so a secret passed under some other name is shown
 as it is. A dashboard other people can reach should have `CUDASCOPE_AUTH` set.
 
+The footer of every page names the build it is served by: the version (a
+release such as `v0.1.0`, or `v0.1.0-3-g1a2b3c4` for a commit after it), when
+it was built, and a link to the source.
+
 Every card is a link to a page of its own. The host page carries the same
 treatment for CPU, memory, load average and network:
 
@@ -383,7 +387,7 @@ Prerequisites: Go 1.22+, Node.js 22+, NVIDIA GPU with drivers installed.
 # Build frontend
 cd ui && npm ci && npm run build && cd ..
 
-# Build binary
+# Build binary (make build-go also stamps the version for the footer)
 go build -o cudascope ./cmd/cudascope/
 
 # Run (requires NVML library)
@@ -395,6 +399,11 @@ go build -o cudascope ./cmd/cudascope/
 ```bash
 docker compose build
 ```
+
+A build made this way says `dev` in the footer. The published images carry
+their version: `ssubbotin/cudascope:latest` follows `main`, and every release
+tag is also published as `:X.Y.Z` and `:X.Y`, for a deployment that should
+only change when you say so.
 
 ## Data Retention
 
