@@ -8,6 +8,11 @@ services:
     # host's own loopback, and the dashboard is served on the host's :9090.
     network_mode: host
 
+    # NVML reports processes by their host PID. Without the host PID
+    # namespace the list comes back empty and the names cannot be read
+    # from /proc, which looks exactly like a GPU nobody is using.
+    pid: host
+
     volumes:
       - cudascope-data:/data
 
