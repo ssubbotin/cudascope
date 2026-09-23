@@ -14,6 +14,7 @@ import (
 	"github.com/sergey/cudascope/internal/agent"
 	"github.com/sergey/cudascope/internal/alerts"
 	"github.com/sergey/cudascope/internal/api"
+	"github.com/sergey/cudascope/internal/buildinfo"
 	"github.com/sergey/cudascope/internal/collector"
 	"github.com/sergey/cudascope/internal/config"
 	"github.com/sergey/cudascope/internal/storage"
@@ -43,7 +44,9 @@ func main() {
 		os.Exit(0)
 	}
 
-	log.Printf("CudaScope starting (mode=%s, port=%d)", cfg.Mode, cfg.Port)
+	build := buildinfo.Get()
+	log.Printf("CudaScope %s starting (mode=%s, port=%d, revision=%s, built=%s)",
+		build.Version, cfg.Mode, cfg.Port, build.Revision, build.BuiltAt)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -273,6 +276,7 @@ func newAPIServer(db *storage.DB, hub *api.Hub, engine *alerts.Engine, cfg *conf
 		Auth:        cfg.Auth,
 		IngestToken: cfg.IngestToken,
 		CORSOrigin:  cfg.CORSOrigin,
+		Build:       buildinfo.Get(),
 	}
 
 	if cfg.DevMode {

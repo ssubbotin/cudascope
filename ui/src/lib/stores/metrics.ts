@@ -102,6 +102,15 @@ export type AlertKind =
 
 // AlertEvent is one alert from the moment it opened to the moment it
 // cleared. Open events have no ended_at.
+/** Which build of cudascope is serving the page (internal/buildinfo). */
+export interface BuildInfo {
+	/** git describe: v0.1.0 on a release, v0.1.0-3-g1a2b3c4 after it, dev unstamped. */
+	version: string;
+	revision?: string;
+	/** RFC 3339, UTC. Absent when the build did not record it. */
+	built_at?: string;
+}
+
 export interface AlertEvent {
 	id: number;
 	node_id: string;
@@ -160,6 +169,7 @@ export interface OllamaPoint {
 }
 
 export const latestOllama = writable<OllamaMetrics | null>(null);
+export const build = writable<BuildInfo | null>(null);
 export const ollamaHistory = writable<OllamaPoint[]>([]);
 
 /** One stream reading folded into the shape the history endpoint returns. */
@@ -295,6 +305,7 @@ export async function fetchStatus() {
 		alerts.set(data.alerts ?? []);
 		if (data.vllm) latestVLLM.set(data.vllm);
 		if (data.ollama) latestOllama.set(data.ollama);
+		if (data.build) build.set(data.build);
 
 		await seedSparklines(data.devices ?? [], !!data.vllm, !!data.ollama);
 	} catch (e) {

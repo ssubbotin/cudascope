@@ -21,6 +21,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Every commit and tag, so git describe can name the release this
+          # build comes from. A shallow clone has no tags to find.
+          fetch-depth: 0
+
+      - name: Describe the build
+        id: describe
+        run: echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -51,5 +59,11 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Shown in the dashboard footer. The time is the image's own
+          # created label, so the two never disagree.
+          build-args: |
+            VERSION=${{ steps.describe.outputs.version }}
+            REVISION=${{ github.sha }}
+            BUILD_TIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

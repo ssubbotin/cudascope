@@ -13,7 +13,16 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui-builder /app/ui/build ./ui/build
-RUN go build -ldflags="-s -w" -o cudascope ./cmd/cudascope/
+# Which build this is, for the dashboard footer. .git is not in the build
+# context, so CI passes them in; left empty, the footer says "dev".
+ARG VERSION=
+ARG REVISION=
+ARG BUILD_TIME=
+RUN go build -ldflags="-s -w \
+    -X github.com/sergey/cudascope/internal/buildinfo.Version=${VERSION} \
+    -X github.com/sergey/cudascope/internal/buildinfo.Revision=${REVISION} \
+    -X github.com/sergey/cudascope/internal/buildinfo.BuildTime=${BUILD_TIME}" \
+    -o cudascope ./cmd/cudascope/
 
 # Stage 3: Runtime
 # No CUDA base needed — NVIDIA Container Toolkit mounts libnvidia-ml.so from the host.
